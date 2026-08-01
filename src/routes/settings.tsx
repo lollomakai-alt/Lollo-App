@@ -4,6 +4,7 @@ import { MapPinned, Save, CheckCircle2, FileText, ImageIcon, Upload, Store, Mess
 import { TopNav } from "@/components/top-nav";
 import { supabase } from "@/lib/supabase";
 import { fetchAlertThreshold, saveAlertThreshold, DEFAULT_ALERT_THRESHOLD_MINUTES } from "@/lib/alert-settings-api";
+import { saveLayoutSnapshot } from "@/lib/layout-snapshot-api";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsScreen,
@@ -33,6 +34,8 @@ function SettingsScreen() {
   const [receiptFooter, setReceiptFooter] = useState("");
   const [googleReviewLink, setGoogleReviewLink] = useState("");
   const [alertThreshold, setAlertThreshold] = useState<number>(DEFAULT_ALERT_THRESHOLD_MINUTES);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [layoutSaved, setLayoutSaved] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
 
   // Carica i dati da Supabase e il layout salvato all'avvio della schermata[span_1](start_span)[span_1](end_span)
@@ -118,6 +121,19 @@ function SettingsScreen() {
   };
 
   // Funzione di salvataggio unificata su Supabase[span_3](start_span)[span_3](end_span)
+  const handleSaveLayout = async () => {
+    setSavingLayout(true);
+    try {
+      const result = await saveLayoutSnapshot();
+      if (result.ok) {
+        setLayoutSaved(true);
+        setTimeout(() => setLayoutSaved(false), 3000);
+      }
+    } finally {
+      setSavingLayout(false);
+    }
+  };
+
   const handleSave = async () => {
     try {
       setLoading(true);
@@ -265,20 +281,44 @@ function SettingsScreen() {
           <p className="text-xs text-slate-400">
             Se un tavolo resta in attesa (portata non ancora servita) oltre questa soglia, sulla Mappa Live
             comparirà un alert visivo pulsante per aiutare i camerieri a non perdere il ritmo durante il rush.
+            Imposta <span className="font-bold text-slate-300">0</span> per disattivare completamente l'alert.
           </p>
 
           {!loadingSettings && (
             <div className="flex items-center gap-3">
               <input
                 type="number"
-                min={1}
+                min={0}
                 value={alertThreshold}
-                onChange={(e) => setAlertThreshold(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => setAlertThreshold(Math.max(0, Number(e.target.value) || 0))}
                 className="w-24 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500 transition-colors font-mono"
               />
-              <span className="text-xs text-slate-400 font-semibold">minuti</span>
+              <span className="text-xs text-slate-400 font-semibold">
+                {alertThreshold === 0 ? "minuti (alert disattivato)" : "minuti"}
+              </span>
             </div>
           )}
+        </section>
+
+        {/* ── Layout Definitivo Mappa ── */}
+        <section className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5 shadow-xl space-y-4">
+          <div className="flex items-center gap-2 border-b pb-3 border-slate-800">
+            <MapPinned className="h-5 w-5 text-cyan-400" />
+            <h2 className="text-base font-extrabold text-white">Layout Definitivo Mappa</h2>
+          </div>
+          <p className="text-xs text-slate-400">
+            Salva la disposizione attuale dei tavoli (posizione, ingombro, sala) come layout di riferimento.
+            Da quel momento, sulla Mappa Live il pulsante "Ripristina tavoli" riporterà istantaneamente
+            i tavoli a questa disposizione, anche se nel frattempo sono stati spostati per errore.
+          </p>
+          <button
+            onClick={handleSaveLayout}
+            disabled={savingLayout}
+            className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 px-4 py-2.5 text-xs font-black text-slate-950 uppercase tracking-wide transition-all"
+          >
+            {layoutSaved ? <CheckCircle2 className="h-4 w-4" /> : <MapPinned className="h-4 w-4" />}
+            {layoutSaved ? "Layout salvato!" : savingLayout ? "Salvataggio…" : "Salva layout definitivo mappa attuale"}
+          </button>
         </section>
 
         {/* ── Layout Mappa ── */}

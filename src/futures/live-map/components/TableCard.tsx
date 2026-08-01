@@ -19,7 +19,7 @@ export interface PosTable {
  * (schermo da 11 pollici). Meno celle di prima ma più grandi: i tavoli devono
  * essere ben visibili, non quadratini piccoli.
  */
-export const COLS = 8;
+export const COLS = 9;
 export const ROWS = 5;
 /** Limiti del lato del tavolo (quadrato) in px: alzati per restare ben visibili su iPad 11". */
 export const MIN_CELL = 76;
@@ -105,6 +105,8 @@ interface TableCardProps {
    * refresh a metà trascinamento fa scattare indietro il tavolo alla posizione precedente.
    */
   onDragStart?: () => void;
+  /** Nota veloce sul tavolo: "+ Note" per aggiungerla, tocco per modificarla. */
+  onNoteChange?: (id: string, note: string) => void;
 }
 
 export const TableCard: React.FC<TableCardProps> = ({
@@ -117,6 +119,7 @@ export const TableCard: React.FC<TableCardProps> = ({
   statusOverride,
   alert,
   onDragStart,
+  onNoteChange,
 }) => {
   const effectiveStatus = statusOverride ?? table.status;
   const styleDef = statusStyle[effectiveStatus] || statusStyle.free!;
@@ -236,6 +239,21 @@ export const TableCard: React.FC<TableCardProps> = ({
         <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-[10px] font-bold text-slate-300">
           {span}
         </span>
+      )}
+
+      {onNoteChange && (
+        <button
+          data-keep-open
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            const next = window.prompt("Nota veloce per il tavolo:", table.note || "");
+            if (next !== null) onNoteChange(String(table.id), next.trim());
+          }}
+          className="absolute bottom-1 left-1/2 -translate-x-1/2 max-w-[90%] truncate rounded-md bg-black/30 px-1.5 py-0.5 text-[9px] font-semibold text-slate-300 hover:bg-black/50"
+        >
+          {table.note ? `📝 ${table.note}` : "+ Note"}
+        </button>
       )}
     </div>
   );

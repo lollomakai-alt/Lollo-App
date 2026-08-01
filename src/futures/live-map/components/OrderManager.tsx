@@ -5,8 +5,9 @@ import {
   sendOrderToSupabase, 
   closeTicketInSupabase,
   updateTableStatusInSupabase,
+  printStornoToSupabase,
 } from "@/lib/supabase-service";
-import { fetchOrderItemsForTable, markOrderItemsServed, reassignOrderItemsTable, summarizeTableCourses, type OrderItemRow } from "@/lib/order-items-api";
+import { fetchOrderItemsForTable, markOrderItemsServed, reassignOrderItemsTable, reduceOrderItemQuantity, summarizeTableCourses, type OrderItemRow } from "@/lib/order-items-api";
 import { fetchAlertThreshold, DEFAULT_ALERT_THRESHOLD_MINUTES } from "@/lib/alert-settings-api";
 import { MenuDish, CATEGORY_SUGGESTIONS, DEFAULT_CATEGORY_RULE, DEFAULT_COURSES } from "@/lib/menu-data";
 import { fetchCourses } from "@/lib/courses-api";
@@ -43,7 +44,13 @@ function draftKey(tableId: string) {
 
 function loadDraft(
   tableId: string,
-): { orderItems: any[]; discountPercent: number; splitCount: number; covers?: number } | null {
+): {
+  orderItems: any[];
+  discountPercent: number;
+  splitCount: number;
+  covers?: number;
+  sentSnapshot?: Record<string, number>;
+} | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(draftKey(tableId));
@@ -83,6 +90,10 @@ export function OrderManager({
   const [covers, setCovers] = useState<number>(
     initialDraft?.covers ?? reservation?.covers ?? tableSeats ?? 2,
   );
+  // Traccia quanto di ogni riga d'ordine è già stato stampato/inviato in cucina: serve a
+  // stampare solo il delta quando si rimanda la comanda, e a chiedere conferma + stampare
+  // uno storno quando si toglie qualcosa che era già stato inviato.
+  const [sentSnapshot, setSentSnapshot] = useState<Record<string, number>>(initialDraft?.sentSnapshot ?? {});
   const [isLoadingMenu, setIsLoadingMenu] = useState<boolean>(true);
   const [currentReservation, setCurrentReservation] = useState<ReservationInfo | null>(reservation);
   const [showCustomDish, setShowCustomDish] = useState<boolean>(false);
@@ -215,7 +226,8 @@ export function OrderManager({
   const oldestPendingElapsedMin = courseSummary.oldestPendingAt
     ? Math.floor((nowTick - new Date(courseSummary.oldestPendingAt).getTime()) / 60000)
     : null;
-  const isAlerting = oldestPendingElapsedMin !== null && oldestPendingElapsedMin >= alertThresholdMinutes;
+  const isAlerting =
+    alertThresholdMinutes > 0 && oldestPendingElapsedMin !== null && oldestPendingElapsedMin >= alertThresholdMinutes;
 
   /** Suono di notifica delicato (due toni morbidi), usato solo quando si supera la soglia di attesa. */
   const playGentleChime = () => {
@@ -331,13 +343,13 @@ export function OrderManager({
       } else {
         window.localStorage.setItem(
           draftKey(tableId),
-          JSON.stringify({ orderItems, discountPercent, splitCount, covers }),
+          JSON.stringify({ orderItems, discountPercent, splitCount, covers, sentSnapshot }),
         );
       }
     } catch {
       // storage non disponibile: l'app continua a funzionare, solo senza persistenza locale
     }
-  }, [tableId, orderItems, discountPercent, splitCount, covers]);
+  }, [tableId, orderItems, discountPercent, splitCount, covers, sentSnapshot]);
 
   useEffect(() => {
     fetchCourses().then((list) => setCourses(list.length ? list : DEFAULT_COURSES));
@@ -503,10 +515,47 @@ export function OrderManager({
   };
 
   const handleUpdateQty = (id: string, delta: number) => {
+    if (delta >= 0) {
+      setOrderItems((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, qty: item.qty + delta } : item)),
+      );
+      return;
+    }
+
+    const item = orderItems.find((i) => i.id === id);
+    if (!item) return;
+    const newQty = item.qty + delta;
+    const sentQty = sentSnapshot[id] || 0;
+
+    if (sentQty > 0 && newQty < sentQty) {
+      // Si sta togliendo una quantità già inviata in cucina (o al bar): serve conferma esplicita,
+      // e alla conferma si stampa uno storno per la differenza.
+      const stornoQty = sentQty - newQty;
+      const confirmed = window.confirm(
+        `"${item.name}" è già stato inviato in cucina. Rimuoverlo stamperà uno storno (-${stornoQty}). Confermi?`,
+      );
+      if (!confirmed) return;
+
+      printStornoToSupabase({
+        tableId,
+        tableLabel,
+        itemName: item.name,
+        qty: stornoQty,
+        destination: item.destination || "Cucina",
+      }).then((ok) => {
+        onFlash(ok ? `🧾 Storno stampato: -${stornoQty} ${item.name}` : "⚠️ Errore nella stampa dello storno");
+      });
+      if ((item.destination || "Cucina") === "Cucina") {
+        reduceOrderItemQuantity(tableId, id, stornoQty).then(() => loadCourseItems());
+      }
+
+      setSentSnapshot((prev) => ({ ...prev, [id]: Math.max(0, newQty) }));
+    }
+
     setOrderItems((prev) =>
       prev
-        .map((item) => (item.id === id ? { ...item, qty: item.qty + delta } : item))
-        .filter((item) => item.qty > 0)
+        .map((i) => (i.id === id ? { ...i, qty: i.qty + delta } : i))
+        .filter((i) => i.qty > 0),
     );
   };
 
@@ -527,25 +576,65 @@ export function OrderManager({
       return;
     }
 
+    // Per la Comanda si stampa e si registra SOLO il delta rispetto a quanto già inviato in
+    // precedenza (es. se avevi già mandato 2 Margherite e ne aggiungi una terza, si stampa solo
+    // "1x Margherita"): evita di ristampare in cucina l'intera comanda ad ogni aggiunta.
+    const itemsToSend =
+      type === "COMANDA"
+        ? orderItems
+            .map((item) => {
+              const already = sentSnapshot[item.id] || 0;
+              const delta = item.qty - already;
+              return delta > 0 ? { ...item, qty: delta } : null;
+            })
+            .filter((item): item is any => item !== null)
+        : orderItems;
+
+    if (type === "COMANDA" && itemsToSend.length === 0) {
+      onFlash("ℹ️ Nessun nuovo articolo da inviare: hai già mandato tutto quanto in carrello");
+      return;
+    }
+
     setIsSending(true);
     try {
       if (currentReservation) {
         await handleCheckoutReservation();
       }
 
+      const sendSubtotal = itemsToSend.reduce((sum: number, i: any) => sum + i.price * i.qty, 0);
+
       const payload = {
         type,
         tableId,
         tableLabel,
-        items: orderItems,
-        subtotal,
-        total,
+        items: itemsToSend,
+        subtotal: type === "COMANDA" ? sendSubtotal : subtotal,
+        total: type === "COMANDA" ? sendSubtotal : total,
         covers,
         destination: "Cucina",
       };
 
       const success = await sendOrderToSupabase(payload);
       if (success) {
+        if (type === "COMANDA") {
+          // Tutto ciò che è nel carrello ora risulta "inviato": la prossima comanda stamperà
+          // solo gli articoli aggiunti da questo momento in poi.
+          const nextSnapshot: Record<string, number> = { ...sentSnapshot };
+          orderItems.forEach((item) => {
+            nextSnapshot[item.id] = item.qty;
+          });
+          setSentSnapshot(nextSnapshot);
+          // Scritto subito anche su storage: il componente si smonta appena dopo onClose(),
+          // non possiamo fidarci che l'effetto di persistenza faccia in tempo a girare prima.
+          try {
+            window.localStorage.setItem(
+              draftKey(tableId),
+              JSON.stringify({ orderItems, discountPercent, splitCount, covers, sentSnapshot: nextSnapshot }),
+            );
+          } catch {
+            // no-op
+          }
+        }
         onFlash(`🚀 ${type} inviata con successo per il Tavolo ${tableLabel}`);
         // Chiude subito la pagina dopo l'invio, cosi non si rischia di ripremere e rimandare l'ordine due volte.
         onClose();
@@ -663,7 +752,10 @@ export function OrderManager({
           {/* Header Cyberpunk */}
           <div className={`flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5 sm:px-6 sm:py-3.5 transition-all ${courseTheme.headerBorder} ${courseTheme.headerBg}`}>
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-xl sm:rounded-2xl border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 font-bold text-sm sm:text-base shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+              <div className="relative flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-xl sm:rounded-2xl border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 font-bold text-sm sm:text-base shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+                <span className="absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-cyan-500 text-[9px] font-black text-slate-950">
+                  {tableLabel.trim().charAt(0).toUpperCase() || "T"}
+                </span>
                 {tableLabel}
               </div>
               <div>
@@ -904,7 +996,7 @@ export function OrderManager({
                 )}
               </div>
 
-              <div className="flex-1 overflow-y-auto pr-1">
+              <div className="flex-1 min-h-0 overflow-y-auto pr-1">
                 {isLoadingMenu ? (
                   <div className="flex h-full items-center justify-center">
                     <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
@@ -950,7 +1042,7 @@ export function OrderManager({
             </div>
 
             {/* COLONNA DESTRA: Lista Ordini & Totali (Spostata a destra) */}
-            <div className={`${mobileTab === "menu" ? "hidden" : "flex"} lg:flex w-full lg:w-96 xl:w-[420px] flex-col bg-slate-950 p-3 sm:p-4 lg:p-5 overflow-hidden`}>
+            <div className={`${mobileTab === "menu" ? "hidden" : "flex"} lg:flex w-full lg:w-[420px] xl:w-[460px] flex-col bg-slate-950 border-l-2 border-cyan-500/30 p-3 sm:p-4 lg:p-5 overflow-hidden shadow-[-8px_0_24px_rgba(6,182,212,0.06)]`}>
               <div className="flex items-center justify-between pb-3 border-b border-cyan-500/20 mb-3">
                 <div className="flex items-center gap-2">
                   <Utensils className="w-4 h-4 text-cyan-400" />
@@ -1055,7 +1147,7 @@ export function OrderManager({
                 </div>
               )}
 
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                 {orderItems.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-center text-slate-500 text-xs italic px-6">
                     Nessun articolo aggiunto. Seleziona i piatti dalla griglia a sinistra.
@@ -1222,7 +1314,7 @@ export function OrderManager({
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
               {composeCategoriesPresent.length === 0 ? (
                 <p className="text-xs text-slate-500 italic text-center py-6">
                   Nessun ingrediente configurato per questo piatto. Aggiungili dalla Gestione Menu.

@@ -20,6 +20,10 @@ export interface PosTable {
   y: number;
   seats: number;
   span: number;
+  /** Sala di appartenenza, salvata a parte: rinominare il tavolo non deve mai spostarlo di sala. */
+  roomPrefix?: string;
+  /** Nota veloce sul tavolo (es. "allergia noci", "compleanno"), visibile in piccolo sulla card. */
+  note?: string;
 }
 
 const SPAN_KEY = "makai.table.spans";
@@ -55,7 +59,7 @@ function normalizeStatus(raw: unknown): TableStatus {
  * Deve restare identica a COLS/ROWS in TableCard.tsx (canvas rettangolare per iPad orizzontale),
  * altrimenti i tavoli vengono posizionati/clampati su una griglia diversa da quella disegnata.
  */
-export const GRID_COLS = 8;
+export const GRID_COLS = 9;
 export const GRID_ROWS = 5;
 
 export function gridPosition(index: number) {
@@ -86,6 +90,8 @@ function mapRow(row: Record<string, any>, index: number, spans: Record<string, n
 
     seats: Number(row.seats ?? 2),
     span: spans[id] ?? 1,
+    roomPrefix: row.room_prefix || undefined,
+    note: row.note || undefined,
   };
 }
 
@@ -97,7 +103,7 @@ export async function fetchTables(): Promise<PosTable[]> {
   return (data ?? []).map((row, i) => mapRow(row as Record<string, any>, i, spans));
 }
 
-export async function createTable(label: string, index: number): Promise<PosTable> {
+export async function createTable(label: string, index: number, roomPrefix?: string): Promise<PosTable> {
   const pos = gridPosition(index);
   const { data, error } = await supabase
     .from("Tables")
@@ -108,6 +114,7 @@ export async function createTable(label: string, index: number): Promise<PosTabl
         [COL_X]: pos.x,
         [COL_Y]: pos.y,
         seats: 2,
+        room_prefix: roomPrefix || null,
       },
     ])
     .select()
@@ -125,7 +132,7 @@ export async function deleteTables(ids: string[]): Promise<void> {
 
 export async function updateTable(
   id: string,
-  patch: { label?: string; status?: TableStatus; x?: number; y?: number; seats?: number },
+  patch: { label?: string; status?: TableStatus; x?: number; y?: number; seats?: number; roomPrefix?: string; note?: string },
 ): Promise<void> {
   const payload: Record<string, any> = {};
   if (patch.label !== undefined) payload[COL_LABEL] = patch.label;
@@ -133,6 +140,8 @@ export async function updateTable(
   if (patch.x !== undefined) payload[COL_X] = patch.x;
   if (patch.y !== undefined) payload[COL_Y] = patch.y;
   if (patch.seats !== undefined) payload.seats = patch.seats;
+  if (patch.roomPrefix !== undefined) payload.room_prefix = patch.roomPrefix;
+  if (patch.note !== undefined) payload.note = patch.note;
   if (!Object.keys(payload).length) return;
   const { error } = await supabase.from("Tables").update(payload).eq("id", Number(id));
   if (error) throw error;

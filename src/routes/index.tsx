@@ -13,8 +13,6 @@ import {
 
 import { TableModal } from "@/futures/live-map/components/TableModal";
 import { OrderManager } from "@/futures/live-map/components/OrderManager";
-import { TableListMobile } from "@/futures/live-map/components/TableListMobile";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { ReservationsSidebar } from "@/futures/live-map/components/ReservationsSidebar";
 import { BarCounterPanel } from "@/futures/live-map/components/BarCounter";
 import { isBarTab, openBarTab, closeBarTab } from "@/lib/bar-counter";
@@ -24,11 +22,13 @@ import {
   createReservation,
   assignReservationToTable,
   completeReservation,
+  deleteReservation,
 } from "@/lib/reservations-api";
 import { supabase } from "@/lib/supabase";
 import { updateTableStatusInSupabase } from "@/lib/supabase-service";
 import { fetchAllOpenOrderItems, summarizeTableCourses, type OrderItemRow } from "@/lib/order-items-api";
 import { fetchAlertThreshold, DEFAULT_ALERT_THRESHOLD_MINUTES } from "@/lib/alert-settings-api";
+import { restoreLayoutSnapshot } from "@/lib/layout-snapshot-api";
 import {
   createTable,
   deleteTables as deleteTablesApi,
@@ -62,7 +62,6 @@ export const Route = createFileRoute("/")({
 });
 
 function MappaLive() {
-  const isMobile = useIsMobile();
   const [rooms, setRooms] = useState<PosRoom[]>(loadRooms);
   const [activeRoomId, setActiveRoomId] = useState<string>(() => loadRooms()[0].id);
   const [allTables, setAllTables] = useState<PosTable[]>([]);
@@ -120,7 +119,9 @@ function MappaLive() {
   const tables = useMemo(
     () =>
       allTables.filter(
-        (t) => !isBarTab(t.label) && roomPrefixOf(t.label, rooms) === activeRoom.prefix,
+        (t) =>
+          !isBarTab(t.label) &&
+          (t.roomPrefix ? t.roomPrefix === activeRoom.prefix : roomPrefixOf(t.label, rooms) === activeRoom.prefix),
       ),
     [allTables, rooms, activeRoom],
   );
@@ -135,6 +136,19 @@ function MappaLive() {
     try {
       const rows = await fetchTables();
       setAllTables(rows);
+
+      // Auto-riparazione: i tavoli creati prima di questo aggiornamento non hanno ancora una
+      // sala salvata a parte, quindi la deduciamo una sola volta dal nome attuale e la fissiamo.
+      // Da questo momento in poi rinominare il tavolo non lo farà più sparire dalla sua sala.
+      const currentRooms = loadRooms();
+      rows
+        .filter((t) => !t.roomPrefix && !isBarTab(t.label))
+        .forEach((t) => {
+          const prefix = roomPrefixOf(t.label, currentRooms);
+          updateTable(t.id, { roomPrefix: prefix }).catch(() => {
+            // non bloccante: se fallisce, il fallback dal nome resta comunque attivo
+          });
+        });
     } catch (e: any) {
       console.error("Errore caricamento Tables:", e);
       setFlash("⚠️ Errore di sincronizzazione database");
@@ -221,7 +235,7 @@ function MappaLive() {
       let alert = false;
       if (summary.oldestPendingAt) {
         const elapsedMin = (nowTick - new Date(summary.oldestPendingAt).getTime()) / 60000;
-        alert = elapsedMin >= alertThresholdMinutes;
+        alert = alertThresholdMinutes > 0 && elapsedMin >= alertThresholdMinutes;
       }
       const statusOverride =
         summary.synthetic === "in_preparazione" ? "preparing" : summary.synthetic === "in_attesa" ? "ready" : undefined;
@@ -440,10 +454,38 @@ function MappaLive() {
     return `${prefix}${n}`;
   }, [tables, activeRoom]);
 
+  const handleNoteChange = useCallback(async (id: string, note: string) => {
+    setAllTables((prev) => prev.map((t) => (String(t.id) === id ? { ...t, note } : t)));
+    try {
+      await updateTable(id, { note });
+    } catch (e) {
+      console.error("Errore salvataggio nota tavolo:", e);
+    }
+  }, []);
+
+  const [restoringLayout, setRestoringLayout] = useState(false);
+
+  const handleRestoreLayout = async () => {
+    if (restoringLayout) return;
+    if (!window.confirm("Riportare tutti i tavoli alla disposizione salvata come layout definitivo?")) return;
+    setRestoringLayout(true);
+    try {
+      const result = await restoreLayoutSnapshot();
+      if (result.ok) {
+        setFlash(`🗺️ Layout ripristinato (${result.restored} tavoli)`);
+        reload();
+      } else {
+        setFlash("⚠️ Nessun layout definitivo salvato (vai in Impostazioni per salvarne uno)");
+      }
+    } finally {
+      setRestoringLayout(false);
+    }
+  };
+
   const handleAddTable = async () => {
     try {
       const spot = findFreeCell(tables, 1);
-      const created = await createTable(nextLabel(), 0);
+      const created = await createTable(nextLabel(), 0, activeRoom.prefix);
       created.x = spot.col;
       created.y = spot.row;
       setAllTables((prev) => [...prev, created]);
@@ -512,7 +554,7 @@ function MappaLive() {
         let n = 1;
         while (used.has(n)) n++;
         used.add(n);
-        const created = await createTable(`${prefix}${n}`, 0);
+        const created = await createTable(`${prefix}${n}`, 0, activeRoom.prefix);
         // i pezzi separati si posizionano accanto al tavolo di partenza
         const spot = findFreeCell(occupied, 1, { col: target.x + i + 1, row: target.y });
         created.x = spot.col;
@@ -611,6 +653,15 @@ function MappaLive() {
               >
                 Modifica mappa
               </button>
+
+              <button
+                onClick={handleRestoreLayout}
+                disabled={restoringLayout}
+                title="Riporta i tavoli alla disposizione salvata come layout definitivo (Impostazioni)"
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-purple-500/30 bg-purple-950/30 px-4 py-2 text-xs font-bold text-purple-300 hover:bg-purple-500/10 hover:border-purple-400 disabled:opacity-40 transition-all"
+              >
+                {restoringLayout ? "Ripristino…" : "Ripristina tavoli"}
+              </button>
             </div>
           </div>
 
@@ -626,26 +677,9 @@ function MappaLive() {
             </div>
           )}
 
-          {/* Canvas (iPad/desktop) oppure lista lineare (telefono, niente mappa spaziale) */}
+          {/* Canvas: unica visualizzazione della mappa nel gestionale, pensata per iPad/tablet.
+              Su telefono si usa l'App Cameriere dedicata, non più uno switch qui dentro. */}
           <div className="relative flex-1 overflow-hidden p-3 sm:p-5">
-            {isMobile ? (
-              <div className="relative h-full w-full rounded-3xl border border-cyan-500/20 bg-slate-950/40 shadow-[inset_0_0_80px_rgba(0,0,0,0.9)] backdrop-blur-md">
-                {isLoading ? (
-                  <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-                    <div className="h-10 w-10 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent shadow-[0_0_15px_rgba(6,182,212,0.6)]" />
-                    <span className="text-[11px] uppercase tracking-wider text-cyan-400/80">Sincronizzazione…</span>
-                  </div>
-                ) : (
-                  <TableListMobile
-                    tables={tables}
-                    onTap={handleTap}
-                    isMultiSelected={(id) => multiSel.includes(id)}
-                    editMode={editMode}
-                    courseInfoFor={(id) => tableCourseInfo(id)}
-                  />
-                )}
-              </div>
-            ) : (
             <div
               ref={canvasRef}
               className="relative h-full w-full select-none overflow-hidden rounded-3xl border border-cyan-500/20 bg-slate-950/40 shadow-[inset_0_0_80px_rgba(0,0,0,0.9)] backdrop-blur-md"
@@ -695,6 +729,7 @@ function MappaLive() {
                           editMode={editMode}
                           statusOverride={courseInfo.statusOverride}
                           alert={courseInfo.alert}
+                          onNoteChange={handleNoteChange}
                         />
                       );
                     })}
@@ -704,7 +739,6 @@ function MappaLive() {
 
               )}
             </div>
-            )}
 
             {editMode && (
               <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center px-3">
@@ -741,6 +775,17 @@ function MappaLive() {
             } catch (e) {
               console.error("Errore creazione prenotazione:", e);
               setFlash("⚠️ Errore nel salvataggio della prenotazione");
+            }
+          }}
+          onDeleteReservation={async (id) => {
+            const target = reservations.find((r) => r.id === id);
+            try {
+              await deleteReservation(id);
+              setReservations((prev) => prev.filter((r) => r.id !== id));
+              setFlash(target ? `🗑️ Prenotazione di ${target.clientName} eliminata (resta nello storico clienti)` : "🗑️ Prenotazione eliminata");
+            } catch (e) {
+              console.error("Errore eliminazione prenotazione:", e);
+              setFlash("⚠️ Errore nell'eliminazione della prenotazione");
             }
           }}
           onSelectReservation={(res) => {

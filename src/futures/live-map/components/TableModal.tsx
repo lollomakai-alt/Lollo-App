@@ -131,32 +131,29 @@ export const TableModal: React.FC<TableModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xl p-4 animate-in fade-in duration-300 touch-none select-none">
-      <div className={`w-full max-w-md rounded-3xl bg-slate-950 border p-6 shadow-[0_0_90px_rgba(0,0,0,0.5)] text-slate-100 flex flex-col gap-6 ${
+      <div className={`w-full max-w-sm rounded-3xl bg-slate-950 border p-5 text-slate-100 flex flex-col gap-5 ${
         table.status === "reserved" 
-          ? "border-cyan-500/80 shadow-[0_0_90px_rgba(6,182,212,0.35)] ring-1 ring-cyan-400/30" 
+          ? "border-cyan-500/40" 
           : table.status === "preparing"
-          ? "border-orange-500/80 shadow-[0_0_90px_rgba(249,115,22,0.35)] ring-1 ring-orange-400/30"
+          ? "border-orange-500/40"
           : table.status === "ready"
-          ? "border-purple-500/80 shadow-[0_0_90px_rgba(168,85,247,0.35)] ring-1 ring-purple-400/30"
+          ? "border-purple-500/40"
           : table.status === "attesa conto"
-          ? "border-amber-500/80 shadow-[0_0_90px_rgba(245,158,11,0.35)] ring-1 ring-amber-400/30"
-          : "border-emerald-500/50 shadow-[0_0_90px_rgba(16,185,129,0.3)] ring-1 ring-emerald-400/20"
+          ? "border-amber-500/40"
+          : "border-emerald-500/30"
       }`}>
         
         {/* Header Modale */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <div className="flex flex-col gap-1">
-            <h3 className={`text-xl sm:text-2xl font-black drop-shadow-[0_0_12px_currentColor] flex items-center gap-2 ${
+          <div className="flex flex-col gap-1.5">
+            <h3 className={`text-2xl sm:text-3xl font-black drop-shadow-[0_0_12px_currentColor] flex items-center gap-2 ${
               table.status === "reserved" ? "text-cyan-400" : table.status === "preparing" ? "text-orange-400" : table.status === "ready" ? "text-purple-400" : table.status === "attesa conto" ? "text-amber-400" : "text-emerald-400"
             }`}>
               Tavolo <span className="font-mono text-white">{table.label}</span>
             </h3>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-xs text-slate-400 uppercase tracking-widest font-semibold">Stato:</span>
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-800 shadow-inner">
-                {getStatusBadge(table.status)}
-              </span>
-            </div>
+            <span className="w-fit text-xs px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-800 shadow-inner">
+              {getStatusBadge(table.status)}
+            </span>
           </div>
           <button
             onClick={onClose}

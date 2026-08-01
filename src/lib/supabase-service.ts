@@ -36,6 +36,36 @@ export type SupabaseOrderPayload = {
   timestamp?: string;
 };
 
+/** Stampa uno storno (-qty) quando un articolo già inviato in cucina viene ridotto o tolto dal conto. */
+export async function printStornoToSupabase(params: {
+  tableId: string;
+  tableLabel: string;
+  itemName: string;
+  qty: number;
+  destination?: string;
+}): Promise<boolean> {
+  try {
+    const { error } = await supabase.from("print_jobs").insert([
+      {
+        status: "nuovo",
+        payload: {
+          tavolo: params.tableLabel,
+          table_id: params.tableId,
+          type: "STORNO",
+          destination: params.destination || "Cucina",
+          items: [{ id: `storno-${Date.now()}`, name: params.itemName, qty: -Math.abs(params.qty), price: 0 }],
+          timestamp: new Date().toISOString(),
+        },
+      },
+    ]);
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.error("[Supabase] Errore stampa storno:", err);
+    return false;
+  }
+}
+
 export async function sendOrderToSupabase(payload: SupabaseOrderPayload): Promise<boolean> {
   const timestamp = payload.timestamp || new Date().toISOString();
   const tableLabel = payload.tableLabel || payload.tableId;

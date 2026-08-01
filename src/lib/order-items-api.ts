@@ -118,6 +118,39 @@ export async function markOrderItemsServed(ids: string[]): Promise<boolean> {
   }
 }
 
+/**
+ * Riduce la quantità tracciata per un piatto (righe order_items) di un tavolo, es. dopo uno storno.
+ * Toglie prima dalle righe non ancora servite; solo se non bastano intacca quelle già servite.
+ */
+export async function reduceOrderItemQuantity(tableId: string, dishId: string, qtyToRemove: number): Promise<void> {
+  if (qtyToRemove <= 0) return;
+  try {
+    const { data, error } = await supabase
+      .from("order_items")
+      .select("*")
+      .eq("table_id", tableId)
+      .eq("dish_id", dishId)
+      .order("status", { ascending: true }) // "ordinato" prima di "servito" alfabeticamente
+      .order("ordered_at", { ascending: false }); // le righe più recenti prima
+    if (error) throw error;
+
+    let remaining = qtyToRemove;
+    for (const row of data || []) {
+      if (remaining <= 0) break;
+      const rowQty = Number(row.qty) || 0;
+      if (rowQty <= remaining) {
+        await supabase.from("order_items").delete().eq("id", row.id);
+        remaining -= rowQty;
+      } else {
+        await supabase.from("order_items").update({ qty: rowQty - remaining }).eq("id", row.id);
+        remaining = 0;
+      }
+    }
+  } catch (err) {
+    console.error("[Supabase] Errore riduzione righe ordine dopo storno:", err);
+  }
+}
+
 /** Riassegna le righe piatto già inviate in cucina da un tavolo a un altro (spostamento/unione ordine). */
 export async function reassignOrderItemsTable(
   fromTableId: string,

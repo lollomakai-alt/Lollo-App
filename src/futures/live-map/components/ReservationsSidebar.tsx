@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { Calendar, Users, Clock, Plus, X } from "lucide-react";
-import type { Reservation } from "@/lib/reservations-api";
+import React, { useState, useRef } from "react";
+import { Calendar, Users, Clock, Plus, X, Trash2, Phone } from "lucide-react";
+import type { Reservation, CustomerSuggestion } from "@/lib/reservations-api";
+import { searchCustomerHistory } from "@/lib/reservations-api";
 
 export type { Reservation };
 
@@ -9,6 +10,7 @@ interface ReservationsSidebarProps {
   selectedReservationId: string | null;
   onSelectReservation: (res: Reservation) => void;
   onAddReservation: (res: Omit<Reservation, "id" | "status">) => void;
+  onDeleteReservation: (id: string) => void;
 }
 
 export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
@@ -16,33 +18,74 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
   selectedReservationId,
   onSelectReservation,
   onAddReservation,
+  onDeleteReservation,
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [clientName, setClientName] = useState("");
+  const [phone, setPhone] = useState("");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [time, setTime] = useState("20:00");
   const [covers, setCovers] = useState(2);
   const [notes, setNotes] = useState("");
+  const [suggestions, setSuggestions] = useState<CustomerSuggestion[]>([]);
+
+  // Swipe laterale per rivelare "Elimina": un solo tavolo aperto alla volta.
+  const [swipedId, setSwipedId] = useState<string | null>(null);
+  const dragRef = useRef<{ id: string; startX: number } | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientName.trim()) return;
     onAddReservation({
       clientName: clientName.trim(),
+      phone: phone.trim(),
       date,
       time,
       covers,
       notes: notes.trim(),
     });
     setClientName("");
+    setPhone("");
     setNotes("");
+    setSuggestions([]);
     setShowModal(false);
+  };
+
+  const handleNameChange = async (value: string) => {
+    setClientName(value);
+    if (value.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    const results = await searchCustomerHistory(value);
+    setSuggestions(results);
+  };
+
+  const applySuggestion = (s: CustomerSuggestion) => {
+    setClientName(s.name);
+    setPhone(s.phone);
+    setSuggestions([]);
+  };
+
+  const handlePointerDown = (id: string, e: React.PointerEvent) => {
+    dragRef.current = { id, startX: e.clientX };
+  };
+
+  const handlePointerMove = (id: string, e: React.PointerEvent) => {
+    if (!dragRef.current || dragRef.current.id !== id) return;
+    const dx = e.clientX - dragRef.current.startX;
+    if (dx < -40) setSwipedId(id); // swipe verso sinistra: rivela il pulsante Elimina
+    if (dx > 20) setSwipedId((prev) => (prev === id ? null : prev)); // swipe verso destra: richiude
+  };
+
+  const handlePointerUp = () => {
+    dragRef.current = null;
   };
 
   const sortedReservations = [...reservations].sort((a, b) => a.time.localeCompare(b.time));
 
   return (
-    <aside className="hidden w-80 shrink-0 flex-col border-l border-cyan-500/25 bg-slate-950/95 backdrop-blur-xl select-none h-full lg:flex lg:w-88">
+    <aside className="hidden w-64 shrink-0 flex-col border-l border-cyan-500/25 bg-slate-950/95 backdrop-blur-xl select-none h-full lg:flex lg:w-72">
       
       {/* Header Sidebar */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-cyan-500/20 bg-slate-900/40">
@@ -73,16 +116,34 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
         ) : (
           sortedReservations.map((res) => {
             const isSelected = selectedReservationId === res.id;
+            const isSwiped = swipedId === res.id;
             return (
-              <div
-                key={res.id}
-                onClick={() => onSelectReservation(res)}
-                className={`group relative flex flex-col p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                  isSelected
-                    ? "bg-cyan-500/25 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)]"
-                    : "bg-cyan-950/20 hover:bg-cyan-950/30 border-cyan-500/30 hover:border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
-                }`}
-              >
+              <div key={res.id} className="relative overflow-hidden rounded-2xl">
+                {/* Pulsante Elimina rivelato dallo swipe */}
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Eliminare la prenotazione di ${res.clientName}? Nome e telefono restano salvati nello storico clienti.`)) {
+                      onDeleteReservation(res.id);
+                    }
+                    setSwipedId(null);
+                  }}
+                  className="absolute inset-y-0 right-0 flex w-16 items-center justify-center bg-rose-500 text-white"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+
+                <div
+                  onClick={() => (isSwiped ? setSwipedId(null) : onSelectReservation(res))}
+                  onPointerDown={(e) => handlePointerDown(res.id, e)}
+                  onPointerMove={(e) => handlePointerMove(res.id, e)}
+                  onPointerUp={handlePointerUp}
+                  style={{ transform: isSwiped ? "translateX(-64px)" : "translateX(0)" }}
+                  className={`group relative flex flex-col p-3.5 rounded-2xl border transition-transform duration-200 cursor-pointer touch-pan-y ${
+                    isSelected
+                      ? "bg-cyan-500/25 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)]"
+                      : "bg-cyan-950/20 hover:bg-cyan-950/30 border-cyan-500/30 hover:border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
+                  }`}
+                >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-black text-cyan-200 truncate">
                     {res.clientName}
@@ -109,6 +170,7 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
                     {res.tableId ? `Tavolo ${res.tableId}` : "Da assegnare"}
                   </span>
                 </div>
+                </div>
               </div>
             );
           })
@@ -130,16 +192,46 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
+              <div className="relative">
                 <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Nome Cliente</label>
                 <input
                   type="text"
                   required
                   value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
+                  onChange={(e) => handleNameChange(e.target.value)}
                   placeholder="Es. Mario Rossi"
+                  autoComplete="off"
                   className="w-full rounded-xl bg-slate-900 border border-cyan-500/30 px-3.5 py-2.5 text-xs text-white focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400/50"
                 />
+                {suggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full rounded-xl border border-cyan-500/30 bg-slate-900 shadow-xl overflow-hidden">
+                    {suggestions.map((s) => (
+                      <button
+                        type="button"
+                        key={s.name + s.phone}
+                        onClick={() => applySuggestion(s)}
+                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs text-slate-200 hover:bg-cyan-500/10"
+                      >
+                        <span className="font-bold">{s.name}</span>
+                        {s.phone && <span className="text-[10px] text-slate-400 font-mono">{s.phone}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Telefono (opzionale)</label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="Es. 333 1234567"
+                    className="w-full rounded-xl bg-slate-900 border border-cyan-500/30 pl-9 pr-3.5 py-2.5 text-xs text-white focus:border-cyan-400 focus:outline-none font-mono"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

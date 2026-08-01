@@ -14,8 +14,6 @@ import {
   Layers,
   AlertTriangle,
   Zap,
-  ChevronUp,
-  ChevronDown,
 } from "lucide-react";
 import {
   MenuDestination,
@@ -29,7 +27,7 @@ import {
 import { TopNav } from "../components/top-nav";
 import { fetchMenuDishesFromSupabase, saveDishToSupabase, deleteDishFromSupabase } from "../lib/supabase-service";
 import { fetchAllergens, saveAllergens, type Allergen } from "../lib/allergens-api";
-import { fetchCourses, saveCourses } from "../lib/courses-api";
+import { fetchCourses } from "../lib/courses-api";
 import { scanMenuImage, scanIngredientsImage, scanAllergensImage } from "../futures/live-map/components/menu-scanner";
 import type { ScannedDish, ScannedIngredient, ScannedAllergen } from "../futures/live-map/components/menu-scanner";
 
@@ -40,7 +38,11 @@ export const Route = createFileRoute("/menu")({
 function MenuManagementPage() {
   const [dishes, setDishes] = useMenuDishes();
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState("Tutti");
+  // Filtro per portata reale del piatto (Antipasti/Primi/...), non più per una "categoria"
+  // indovinata dal testo della descrizione: quella logica confondeva descrizione e categoria
+  // e produceva filtri sbagliati.
+  const [selectedCourseFilter, setSelectedCourseFilter] = useState("Tutti");
+  const [selectedDestinationFilter, setSelectedDestinationFilter] = useState<"Tutti" | "Cucina" | "Bar">("Tutti");
 
   useEffect(() => {
     fetchMenuDishesFromSupabase().then((supaDishes) => {
@@ -67,7 +69,6 @@ function MenuManagementPage() {
 
   // Elenco Portate: caricato da Supabase (tabella settings, chiave "portate_list")
   const [courses, setCourses] = useState<string[]>([]);
-  const [newCourseName, setNewCourseName] = useState("");
 
   useEffect(() => {
     fetchCourses().then(setCourses);
@@ -126,33 +127,29 @@ function MenuManagementPage() {
     });
   };
 
-  // Estrazione categorie uniche dinamiche (filtrando descrizioni lunghe/ingredienti)
-  const categories = useMemo(() => {
-    const cats = new Set<string>();
+  // Portate realmente presenti nel menu (dal campo "course" del piatto, non dalla descrizione)
+  const usedCourses = useMemo(() => {
+    const set = new Set<string>();
     dishes.forEach((d) => {
-      if (d.description && d.description.trim() !== "") {
-        const desc = d.description.trim();
-        // Considera come categoria solo stringhe brevi e senza virgole (evita elenchi di ingredienti)
-        if (desc.length < 20 && !desc.includes(",")) {
-          cats.add(desc);
-        }
-      }
+      if (d.course && d.course.trim() !== "") set.add(d.course.trim());
     });
-    return ["Tutti", ...Array.from(cats)];
+    return ["Tutti", ...Array.from(set)];
   }, [dishes]);
 
-  // Filtraggio piatti per ricerca e categoria
+  // Filtraggio piatti per ricerca, portata e destinazione (Cucina/Bar)
   const filteredDishes = useMemo(() => {
     return dishes.filter((dish) => {
       const matchesSearch =
         dish.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (dish.description && dish.description.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesCategory =
-        selectedCategoryFilter === "Tutti" ||
-        (dish.description && dish.description.trim().toLowerCase() === selectedCategoryFilter.toLowerCase());
-      return matchesSearch && matchesCategory;
+      const matchesCourse =
+        selectedCourseFilter === "Tutti" ||
+        (dish.course && dish.course.trim().toLowerCase() === selectedCourseFilter.toLowerCase());
+      const matchesDestination =
+        selectedDestinationFilter === "Tutti" || (dish.destination || "Cucina") === selectedDestinationFilter;
+      return matchesSearch && matchesCourse && matchesDestination;
     });
-  }, [dishes, searchQuery, selectedCategoryFilter]);
+  }, [dishes, searchQuery, selectedCourseFilter, selectedDestinationFilter]);
 
   const resetDraft = () => {
     setDraft({
@@ -351,32 +348,6 @@ function MenuManagementPage() {
     setAllergenScanReview(null);
   };
 
-  /* ---------------- Elenco Portate ---------------- */
-
-  const addCourse = () => {
-    const name = newCourseName.trim();
-    if (!name || courses.includes(name)) return;
-    const next = [...courses, name];
-    setCourses(next);
-    saveCourses(next);
-    setNewCourseName("");
-  };
-
-  const removeCourse = (name: string) => {
-    const next = courses.filter((c) => c !== name);
-    setCourses(next);
-    saveCourses(next);
-  };
-
-  const moveCourse = (index: number, delta: number) => {
-    const target = index + delta;
-    if (target < 0 || target >= courses.length) return;
-    const next = [...courses];
-    [next[index], next[target]] = [next[target], next[index]];
-    setCourses(next);
-    saveCourses(next);
-  };
-
   // Gestione caricamento foto: la scansione ora apre una revisione editabile prima di salvare
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -420,6 +391,7 @@ function MenuManagementPage() {
       description: item.description || "",
       price: item.price || "0.00",
       destination: item.destination === "Bar" ? "Bar" : "Cucina",
+      isComposable: !!item.isComposable,
     }));
 
     setDishes([...dishes, ...preparedItems]);
@@ -715,16 +687,16 @@ function MenuManagementPage() {
               </div>
             </div>
 
-            {/* Filtri per Categoria Dinamici */}
-            {categories.length > 1 && (
+            {/* Filtri per Portata (reale, dal campo "course" del piatto) */}
+            {usedCourses.length > 1 && (
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
                 <Filter className="w-3.5 h-3.5 text-cyan-400 shrink-0 mr-1" />
-                {categories.map((cat) => (
+                {usedCourses.map((cat) => (
                   <button
                     key={cat}
-                    onClick={() => setSelectedCategoryFilter(cat)}
+                    onClick={() => setSelectedCourseFilter(cat)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
-                      selectedCategoryFilter === cat
+                      selectedCourseFilter === cat
                         ? "bg-cyan-500 text-slate-950 shadow-[0_0_10px_rgba(6,182,212,0.4)] font-black"
                         : "bg-slate-900 text-slate-400 border border-slate-800 hover:text-white"
                     }`}
@@ -735,8 +707,25 @@ function MenuManagementPage() {
               </div>
             )}
 
+            {/* Filtro Destinazione: Cucina / Bar */}
+            <div className="flex items-center gap-1.5">
+              {(["Tutti", "Cucina", "Bar"] as const).map((dest) => (
+                <button
+                  key={dest}
+                  onClick={() => setSelectedDestinationFilter(dest)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
+                    selectedDestinationFilter === dest
+                      ? "bg-amber-500 text-slate-950 shadow-[0_0_10px_rgba(245,158,11,0.4)] font-black"
+                      : "bg-slate-900 text-slate-400 border border-slate-800 hover:text-white"
+                  }`}
+                >
+                  {dest}
+                </button>
+              ))}
+            </div>
+
             {/* Elenco Piatti */}
-            <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
+            <div className="space-y-2.5">
               {filteredDishes.length === 0 ? (
                 <div className="text-center py-12 space-y-2 border border-dashed border-slate-800 rounded-2xl">
                   <UtensilsCrossed className="w-8 h-8 text-slate-600 mx-auto" />
@@ -892,84 +881,6 @@ function MenuManagementPage() {
           </div>
         </div>
 
-        {/* Sezione Gestione Portate */}
-        <div className="bg-slate-950/80 p-5 rounded-2xl border border-cyan-500/30 shadow-xl space-y-4">
-          <div className="flex items-center gap-3 border-b pb-4 border-slate-800">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
-              <Layers className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="font-extrabold text-base text-white">Portate ({courses.length})</h2>
-              <span className="text-xs text-slate-400">
-                Sequenza di uscita in cucina: l'ordine qui sotto è l'ordine con cui usciranno i piatti
-              </span>
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <input
-              value={newCourseName}
-              onChange={(e) => setNewCourseName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addCourse()}
-              placeholder="Nome portata (es. Antipasti)"
-              className="flex-1 min-w-0 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500"
-            />
-            <button
-              type="button"
-              onClick={addCourse}
-              className="rounded-xl bg-cyan-500 hover:bg-cyan-400 px-4 text-slate-950 font-black text-xs uppercase tracking-wide transition-all"
-            >
-              Aggiungi
-            </button>
-          </div>
-
-          <div className="max-h-64 overflow-y-auto pr-1 space-y-1.5">
-            {courses.length === 0 ? (
-              <div className="text-center py-8 space-y-1.5 border border-dashed border-slate-800 rounded-2xl">
-                <Layers className="w-6 h-6 text-slate-600 mx-auto" />
-                <p className="text-xs font-bold text-slate-400">Nessuna portata configurata</p>
-              </div>
-            ) : (
-              courses.map((c, index) => (
-                <div
-                  key={c}
-                  className="flex items-center justify-between gap-2 p-2.5 border rounded-xl border-cyan-500/20 bg-slate-900/60"
-                >
-                  <span className="text-sm font-bold text-white">{c}</span>
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => moveCourse(index, -1)}
-                      disabled={index === 0}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-                      title="Sposta su"
-                    >
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveCourse(index, 1)}
-                      disabled={index === courses.length - 1}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-                      title="Sposta giù"
-                    >
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeCourse(c)}
-                      className="p-1.5 rounded-lg text-red-400 hover:bg-red-950/50 transition-colors"
-                      title="Rimuovi"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
         {/* Modale Scanner Foto */}
         {showScannerModal && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
@@ -1024,7 +935,7 @@ function MenuManagementPage() {
                       ? "L'IA non ha letto nessun piatto dalla foto. Puoi chiudere e riprovare con una foto più nitida, oppure aggiungerli manualmente dal form."
                       : "Correggi eventuali errori di lettura, deseleziona ciò che non vuoi importare, poi conferma."}
                   </p>
-                  <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                     {scanReview.map((row) => (
                       <div
                         key={row.tempId}
@@ -1076,6 +987,17 @@ function MenuManagementPage() {
                             <option value="Bar">Bar</option>
                           </select>
                         </div>
+                        <label className="flex items-center gap-1.5 pl-6 cursor-pointer w-fit">
+                          <input
+                            type="checkbox"
+                            checked={!!row.isComposable}
+                            onChange={(e) => updateScanReviewRow(row.tempId, { isComposable: e.target.checked })}
+                            className="h-3.5 w-3.5 accent-fuchsia-500"
+                          />
+                          <span className="text-[10px] font-bold text-fuchsia-300 uppercase tracking-wide">
+                            Piatto componibile (es. poke) -- ingredienti da scansionare a parte
+                          </span>
+                        </label>
                       </div>
                     ))}
                   </div>
@@ -1164,7 +1086,7 @@ function MenuManagementPage() {
                       ? "L'IA non ha letto nessun ingrediente dalla foto. Puoi chiudere e riprovare, oppure aggiungerli manualmente dal form."
                       : "Correggi eventuali errori di lettura, deseleziona ciò che non vuoi importare, poi conferma."}
                   </p>
-                  <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                     {ingredientScanReview.map((row) => (
                       <div
                         key={row.tempId}
@@ -1293,7 +1215,7 @@ function MenuManagementPage() {
                       ? "L'IA non ha letto nessun allergene dalla foto. Puoi chiudere e riprovare, oppure aggiungerli manualmente qui sopra."
                       : "Correggi eventuali errori di lettura, deseleziona ciò che non vuoi importare, poi conferma."}
                   </p>
-                  <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                     {allergenScanReview.map((row) => (
                       <div
                         key={row.tempId}

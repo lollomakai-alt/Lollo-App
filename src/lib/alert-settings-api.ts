@@ -11,7 +11,7 @@ export async function fetchAlertThreshold(): Promise<number> {
     return DEFAULT_ALERT_THRESHOLD_MINUTES;
   }
   const n = Number(data?.value);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_ALERT_THRESHOLD_MINUTES;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_ALERT_THRESHOLD_MINUTES;
 }
 
 export async function saveAlertThreshold(minutes: number): Promise<boolean> {
