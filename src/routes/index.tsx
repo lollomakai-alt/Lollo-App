@@ -582,6 +582,36 @@ function MappaLive() {
     setFlash(`🏛️ Sala "${name}" aggiunta`);
   };
 
+  const handleRenameRoom = (id: string, name: string) => {
+    const next = rooms.map((r) => (r.id === id ? { ...r, name } : r));
+    setRooms(next);
+    saveRooms(next);
+    setFlash(`🏛️ Sala rinominata in "${name}"`);
+  };
+
+  const handleDeleteRoom = (id: string) => {
+    const remaining = rooms.filter((r) => r.id !== id);
+    if (remaining.length === 0) return;
+    // I tavoli della sala cancellata vengono riassegnati alla prima sala rimasta,
+    // così non spariscono nel nulla e restano comunque gestibili.
+    const fallbackPrefix = remaining[0].prefix;
+    const deletedPrefix = rooms.find((r) => r.id === id)?.prefix;
+    if (deletedPrefix) {
+      allTables
+        .filter((t) => t.roomPrefix === deletedPrefix)
+        .forEach((t) => {
+          updateTable(t.id, { roomPrefix: fallbackPrefix }).catch(() => {});
+        });
+      setAllTables((prev) =>
+        prev.map((t) => (t.roomPrefix === deletedPrefix ? { ...t, roomPrefix: fallbackPrefix } : t)),
+      );
+    }
+    setRooms(remaining);
+    saveRooms(remaining);
+    if (activeRoomId === id) setActiveRoomId(remaining[0].id);
+    setFlash("🏛️ Sala cancellata, tavoli riassegnati");
+  };
+
   const selectedTable = useMemo(
     () => allTables.find((t) => t.id === selectedId) || null,
     [allTables, selectedId],
@@ -614,6 +644,8 @@ function MappaLive() {
               activeRoomId={activeRoom.id}
               onRoomChange={setActiveRoomId}
               onAddRoom={handleAddRoom}
+              onRenameRoom={handleRenameRoom}
+              onDeleteRoom={handleDeleteRoom}
             />
 
             <div className="flex shrink-0 items-center gap-2">

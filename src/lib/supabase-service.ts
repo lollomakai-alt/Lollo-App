@@ -20,6 +20,8 @@ export type PosTicket = {
   total?: number;
   /** Numero di coperti al momento della chiusura: modificabile in ogni momento dal cameriere. */
   covers?: number;
+  /** Metodo di pagamento scelto: "contanti" o "bancomat". */
+  paymentMethod?: string;
   [key: string]: any;
 };
 
@@ -150,6 +152,7 @@ export async function closeTicketInSupabase(ticket: PosTicket): Promise<boolean>
         total: ticket.total || 0,
         covers: ticket.covers ?? null,
         status: "closed",
+        payment_method: ticket.paymentMethod || null,
         closed_at: new Date().toISOString(),
       },
     ]);
@@ -164,9 +167,59 @@ export async function closeTicketInSupabase(ticket: PosTicket): Promise<boolean>
   }
 }
 
+/**
+ * Chiude e archivia SOLO gli articoli selezionati (divisione piatti/conto): il tavolo resta
+ * occupato con il resto dell'ordine ancora aperto, non viene liberato.
+ */
+export async function closePartialTicket(ticket: PosTicket): Promise<boolean> {
+  try {
+    const { error: ticketErr } = await supabase.from("tickets").insert([
+      {
+        table_id: ticket.tableId,
+        table_label: ticket.tableLabel || ticket.tableId,
+        items: ticket.items || [],
+        total: ticket.total || 0,
+        covers: ticket.covers ?? null,
+        status: "closed",
+        payment_method: ticket.paymentMethod || null,
+        closed_at: new Date().toISOString(),
+      },
+    ]);
+    if (ticketErr) throw ticketErr;
+    return true;
+  } catch (err) {
+    console.error("[Supabase] Errore chiusura parziale conto:", err);
+    return false;
+  }
+}
+
 /* ==========================================
    GESTIONE MENU CONNESSA A public.menu_dishes
    ========================================== */
+
+/** Nomi dei piatti più venduti (dai conti chiusi), per il filtro "Top Vendite" nell'Order Menu. */
+export async function fetchTopSellingDishNames(limit: number = 12): Promise<string[]> {
+  try {
+    const { data, error } = await supabase.from("tickets").select("items").eq("status", "closed").limit(500);
+    if (error) throw error;
+    const counts: Record<string, number> = {};
+    (data || []).forEach((row: any) => {
+      const items = Array.isArray(row.items) ? row.items : [];
+      items.forEach((item: any) => {
+        const name = item?.name;
+        if (!name) return;
+        counts[name] = (counts[name] || 0) + (Number(item.qty) || 1);
+      });
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([name]) => name);
+  } catch (err) {
+    console.error("[Supabase] Errore recupero piatti più venduti:", err);
+    return [];
+  }
+}
 
 export async function fetchMenuDishesFromSupabase(): Promise<MenuDish[] | null> {
   try {
@@ -185,6 +238,7 @@ export async function fetchMenuDishesFromSupabase(): Promise<MenuDish[] | null> 
       ingredients: Array.isArray(row.ingredients) ? row.ingredients : [],
       categoryRules: row.category_rules && typeof row.category_rules === "object" ? row.category_rules : {},
       course: row.course || undefined,
+      category: row.category || undefined,
       isQuickItem: Boolean(row.is_quick_item),
     }));
 
@@ -217,6 +271,7 @@ export async function saveDishToSupabase(dish: MenuDish): Promise<boolean> {
       ingredients: dish.ingredients ?? [],
       category_rules: dish.categoryRules ?? {},
       course: dish.course || null,
+      category: dish.category || null,
       is_quick_item: !!dish.isQuickItem,
     };
 

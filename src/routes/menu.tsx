@@ -26,10 +26,9 @@ import {
 } from "../lib/menu-data";
 import { TopNav } from "../components/top-nav";
 import { fetchMenuDishesFromSupabase, saveDishToSupabase, deleteDishFromSupabase } from "../lib/supabase-service";
-import { fetchAllergens, saveAllergens, type Allergen } from "../lib/allergens-api";
+import { scanMenuImage, scanIngredientsImage } from "../futures/live-map/components/menu-scanner";
+import type { ScannedDish, ScannedIngredient } from "../futures/live-map/components/menu-scanner";
 import { fetchCourses } from "../lib/courses-api";
-import { scanMenuImage, scanIngredientsImage, scanAllergensImage } from "../futures/live-map/components/menu-scanner";
-import type { ScannedDish, ScannedIngredient, ScannedAllergen } from "../futures/live-map/components/menu-scanner";
 
 export const Route = createFileRoute("/menu")({
   component: MenuManagementPage,
@@ -41,7 +40,7 @@ function MenuManagementPage() {
   // Filtro per portata reale del piatto (Antipasti/Primi/...), non più per una "categoria"
   // indovinata dal testo della descrizione: quella logica confondeva descrizione e categoria
   // e produceva filtri sbagliati.
-  const [selectedCourseFilter, setSelectedCourseFilter] = useState("Tutti");
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState("Tutti");
   const [selectedDestinationFilter, setSelectedDestinationFilter] = useState<"Tutti" | "Cucina" | "Bar">("Tutti");
 
   useEffect(() => {
@@ -50,21 +49,6 @@ function MenuManagementPage() {
         setDishes(supaDishes);
       }
     });
-  }, []);
-
-  // Elenco allergeni: caricato da Supabase (tabella settings, chiave "allergeni_list")
-  const [allergens, setAllergens] = useState<Allergen[]>([]);
-  const [allergenName, setAllergenName] = useState("");
-  const [allergenCode, setAllergenCode] = useState("");
-  const [showAllergenScanner, setShowAllergenScanner] = useState(false);
-  const [allergenImage, setAllergenImage] = useState<string | null>(null);
-  const [allergenScanLoading, setAllergenScanLoading] = useState(false);
-  const [allergenScanReview, setAllergenScanReview] = useState<
-    (ScannedAllergen & { tempId: string; include: boolean })[] | null
-  >(null);
-
-  useEffect(() => {
-    fetchAllergens().then(setAllergens);
   }, []);
 
   // Elenco Portate: caricato da Supabase (tabella settings, chiave "portate_list")
@@ -127,29 +111,29 @@ function MenuManagementPage() {
     });
   };
 
-  // Portate realmente presenti nel menu (dal campo "course" del piatto, non dalla descrizione)
-  const usedCourses = useMemo(() => {
+  // Categorie realmente presenti nel menu (dal campo "category" del piatto, rilevate dallo scanner o modificate a mano)
+  const usedCategories = useMemo(() => {
     const set = new Set<string>();
     dishes.forEach((d) => {
-      if (d.course && d.course.trim() !== "") set.add(d.course.trim());
+      if (d.category && d.category.trim() !== "") set.add(d.category.trim());
     });
     return ["Tutti", ...Array.from(set)];
   }, [dishes]);
 
-  // Filtraggio piatti per ricerca, portata e destinazione (Cucina/Bar)
+  // Filtraggio piatti per ricerca, categoria e destinazione (Cucina/Bar)
   const filteredDishes = useMemo(() => {
     return dishes.filter((dish) => {
       const matchesSearch =
         dish.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (dish.description && dish.description.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesCourse =
-        selectedCourseFilter === "Tutti" ||
-        (dish.course && dish.course.trim().toLowerCase() === selectedCourseFilter.toLowerCase());
+      const matchesCategory =
+        selectedCategoryFilter === "Tutti" ||
+        (dish.category && dish.category.trim().toLowerCase() === selectedCategoryFilter.toLowerCase());
       const matchesDestination =
         selectedDestinationFilter === "Tutti" || (dish.destination || "Cucina") === selectedDestinationFilter;
-      return matchesSearch && matchesCourse && matchesDestination;
+      return matchesSearch && matchesCategory && matchesDestination;
     });
-  }, [dishes, searchQuery, selectedCourseFilter, selectedDestinationFilter]);
+  }, [dishes, searchQuery, selectedCategoryFilter, selectedDestinationFilter]);
 
   const resetDraft = () => {
     setDraft({
@@ -276,78 +260,6 @@ function MenuManagementPage() {
     setIngredientScanReview(null);
   };
 
-  /* ---------------- Elenco Allergeni ---------------- */
-
-  const addAllergen = () => {
-    const name = allergenName.trim();
-    if (!name) return;
-    const newAllergen: Allergen = { id: `all-${Date.now()}`, name, code: allergenCode.trim() || undefined };
-    const next = [...allergens, newAllergen];
-    setAllergens(next);
-    saveAllergens(next);
-    setAllergenName("");
-    setAllergenCode("");
-  };
-
-  const removeAllergen = (id: string) => {
-    const next = allergens.filter((a) => a.id !== id);
-    setAllergens(next);
-    saveAllergens(next);
-  };
-
-  const handleAllergenImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onloadend = () => setAllergenImage(reader.result as string);
-    reader.readAsDataURL(file);
-
-    setAllergenScanLoading(true);
-    try {
-      const scanned = await scanAllergensImage(file);
-      setAllergenScanReview(
-        scanned.map((item, index) => ({ ...item, tempId: `scan-all-${Date.now()}-${index}`, include: true })),
-      );
-    } catch (error) {
-      console.error("Errore durante la scansione allergeni:", error);
-      alert("Impossibile leggere gli allergeni dalla foto. Riprova o correggi manualmente qui sotto.");
-      setAllergenScanReview([]);
-    } finally {
-      setAllergenScanLoading(false);
-    }
-  };
-
-  const updateAllergenReviewRow = (tempId: string, patch: Partial<ScannedAllergen & { include: boolean }>) => {
-    setAllergenScanReview((prev) => (prev ? prev.map((r) => (r.tempId === tempId ? { ...r, ...patch } : r)) : prev));
-  };
-
-  const removeAllergenReviewRow = (tempId: string) => {
-    setAllergenScanReview((prev) => (prev ? prev.filter((r) => r.tempId !== tempId) : prev));
-  };
-
-  const confirmAllergenScan = () => {
-    if (!allergenScanReview) return;
-    const toAdd = allergenScanReview.filter((r) => r.include && r.name.trim());
-    const prepared: Allergen[] = toAdd.map((item, index) => ({
-      id: `all-${Date.now()}-${index}`,
-      name: item.name.trim(),
-      code: item.code.trim() || undefined,
-    }));
-    const next = [...allergens, ...prepared];
-    setAllergens(next);
-    saveAllergens(next);
-    setShowAllergenScanner(false);
-    setAllergenImage(null);
-    setAllergenScanReview(null);
-  };
-
-  const cancelAllergenScan = () => {
-    setShowAllergenScanner(false);
-    setAllergenImage(null);
-    setAllergenScanReview(null);
-  };
-
   // Gestione caricamento foto: la scansione ora apre una revisione editabile prima di salvare
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -391,7 +303,7 @@ function MenuManagementPage() {
       description: item.description || "",
       price: item.price || "0.00",
       destination: item.destination === "Bar" ? "Bar" : "Cucina",
-      isComposable: !!item.isComposable,
+      category: item.category || "Altro",
     }));
 
     setDishes([...dishes, ...preparedItems]);
@@ -508,6 +420,24 @@ function MenuManagementPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                  Categoria (per l'Order Menu)
+                </label>
+                <input
+                  list="categorie-menu-esistenti"
+                  value={draft.category || ""}
+                  onChange={(e) => setDraft({ ...draft, category: e.target.value || undefined })}
+                  placeholder="es. Pizze, Sushi, Panini..."
+                  className="w-full mt-1.5 p-2.5 rounded-xl bg-slate-900 border border-cyan-500/30 text-white text-sm focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+                <datalist id="categorie-menu-esistenti">
+                  {usedCategories.filter((c) => c !== "Tutti").map((c) => (
+                    <option key={c} value={c} />
+                  ))}
+                </datalist>
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer rounded-xl border border-emerald-500/25 bg-emerald-950/10 p-3">
@@ -687,16 +617,16 @@ function MenuManagementPage() {
               </div>
             </div>
 
-            {/* Filtri per Portata (reale, dal campo "course" del piatto) */}
-            {usedCourses.length > 1 && (
+            {/* Filtri per Categoria (rilevata dallo scanner, modificabile a mano) */}
+            {usedCategories.length > 1 && (
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
                 <Filter className="w-3.5 h-3.5 text-cyan-400 shrink-0 mr-1" />
-                {usedCourses.map((cat) => (
+                {usedCategories.map((cat) => (
                   <button
                     key={cat}
-                    onClick={() => setSelectedCourseFilter(cat)}
+                    onClick={() => setSelectedCategoryFilter(cat)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
-                      selectedCourseFilter === cat
+                      selectedCategoryFilter === cat
                         ? "bg-cyan-500 text-slate-950 shadow-[0_0_10px_rgba(6,182,212,0.4)] font-black"
                         : "bg-slate-900 text-slate-400 border border-slate-800 hover:text-white"
                     }`}
@@ -794,93 +724,6 @@ function MenuManagementPage() {
           </div>
         </div>
 
-        {/* Sezione Elenco Allergeni */}
-        <div className="bg-slate-950/80 p-5 rounded-2xl border border-amber-500/30 shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b pb-4 border-slate-800">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
-                <AlertTriangle className="w-4 h-4" />
-              </div>
-              <div>
-                <h2 className="font-extrabold text-base text-white">Elenco Allergeni ({allergens.length})</h2>
-                <span className="text-xs text-slate-400">
-                  Legenda allergeni del locale (Reg. UE 1169/2011), consultabile e stampabile a parte
-                </span>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowAllergenScanner(true)}
-              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-amber-300 hover:bg-amber-500/20 transition-all shrink-0"
-            >
-              <Camera className="w-4 h-4" /> Scansiona Allergeni da Foto
-            </button>
-          </div>
-
-          {/* Aggiunta manuale */}
-          <div className="flex gap-2">
-            <input
-              value={allergenName}
-              onChange={(e) => setAllergenName(e.target.value)}
-              placeholder="Nome allergene (es. Glutine)"
-              className="flex-1 min-w-0 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
-            />
-            <input
-              value={allergenCode}
-              onChange={(e) => setAllergenCode(e.target.value)}
-              placeholder="N°"
-              className="w-16 rounded-xl bg-slate-900 border border-slate-800 px-2 py-2.5 text-xs text-white placeholder:text-slate-600 font-mono text-center focus:outline-none focus:border-amber-500"
-            />
-            <button
-              type="button"
-              onClick={addAllergen}
-              className="rounded-xl bg-amber-500 hover:bg-amber-400 px-4 text-slate-950 font-black text-xs uppercase tracking-wide transition-all"
-            >
-              Aggiungi
-            </button>
-          </div>
-
-          {/* Elenco scorrevole */}
-          <div className="max-h-72 overflow-y-auto pr-1 space-y-2">
-            {allergens.length === 0 ? (
-              <div className="text-center py-8 space-y-1.5 border border-dashed border-slate-800 rounded-2xl">
-                <AlertTriangle className="w-6 h-6 text-slate-600 mx-auto" />
-                <p className="text-xs font-bold text-slate-400">Nessun allergene registrato</p>
-                <p className="text-[11px] text-slate-600">
-                  Scansiona una foto della legenda allergeni o aggiungili manualmente qui sopra.
-                </p>
-              </div>
-            ) : (
-              allergens
-                .slice()
-                .sort((a, b) => (Number(a.code) || 999) - (Number(b.code) || 999) || a.name.localeCompare(b.name))
-                .map((a) => (
-                  <div
-                    key={a.id}
-                    className="flex items-center justify-between gap-3 p-2.5 border rounded-xl border-amber-500/20 bg-slate-900/60"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {a.code && (
-                        <span className="shrink-0 flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10px] font-black text-amber-300 font-mono">
-                          {a.code}
-                        </span>
-                      )}
-                      <span className="text-sm font-bold text-white truncate">{a.name}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeAllergen(a.id)}
-                      className="p-1.5 hover:bg-red-950/50 rounded-lg text-red-400 transition-colors shrink-0"
-                      title="Rimuovi"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))
-            )}
-          </div>
-        </div>
-
         {/* Modale Scanner Foto */}
         {showScannerModal && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
@@ -969,7 +812,7 @@ function MenuManagementPage() {
                           <input
                             value={row.description}
                             onChange={(e) => updateScanReviewRow(row.tempId, { description: e.target.value })}
-                            placeholder="Categoria / descrizione"
+                            placeholder="Ingredienti / descrizione"
                             className="flex-1 min-w-0 rounded-lg bg-slate-950 border border-slate-800 px-2 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-cyan-500"
                           />
                           <input
@@ -987,17 +830,15 @@ function MenuManagementPage() {
                             <option value="Bar">Bar</option>
                           </select>
                         </div>
-                        <label className="flex items-center gap-1.5 pl-6 cursor-pointer w-fit">
+                        <div className="flex items-center gap-1.5 pl-6">
+                          <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wide shrink-0">Categoria:</span>
                           <input
-                            type="checkbox"
-                            checked={!!row.isComposable}
-                            onChange={(e) => updateScanReviewRow(row.tempId, { isComposable: e.target.checked })}
-                            className="h-3.5 w-3.5 accent-fuchsia-500"
+                            value={row.category}
+                            onChange={(e) => updateScanReviewRow(row.tempId, { category: e.target.value })}
+                            placeholder="es. Pizze, Sushi, Panini..."
+                            className="flex-1 min-w-0 rounded-lg bg-slate-950 border border-cyan-500/30 px-2 py-1.5 text-[11px] font-semibold text-cyan-200 focus:outline-none focus:border-cyan-500"
                           />
-                          <span className="text-[10px] font-bold text-fuchsia-300 uppercase tracking-wide">
-                            Piatto componibile (es. poke) -- ingredienti da scansionare a parte
-                          </span>
-                        </label>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1154,127 +995,6 @@ function MenuManagementPage() {
           </div>
         )}
 
-        {/* Modale Scanner Foto Elenco Allergeni */}
-        {showAllergenScanner && (
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
-            <div
-              className={`bg-slate-950 p-6 rounded-2xl w-full space-y-4 shadow-2xl border border-amber-500/40 ${
-                allergenScanReview ? "max-w-xl max-h-[85vh] flex flex-col" : "max-w-lg"
-              }`}
-            >
-              <div className="flex justify-between items-center border-b pb-3 border-slate-800 shrink-0">
-                <h3 className="font-black text-base text-white flex items-center gap-2">
-                  <Camera className="w-5 h-5 text-amber-400" />
-                  {allergenScanReview ? "Controlla gli allergeni prima di salvare" : "Scansiona Allergeni da Foto"}
-                </h3>
-                <button
-                  onClick={cancelAllergenScan}
-                  className="text-slate-400 hover:text-white font-bold text-xl"
-                >
-                  ×
-                </button>
-              </div>
-
-              {!allergenScanReview && (
-                <p className="text-xs text-slate-400 shrink-0">
-                  Foto della legenda allergeni del locale: verranno letti nome e numero/codice ufficiale
-                  se presente. Potrai correggerli prima di aggiungerli all'elenco.
-                </p>
-              )}
-
-              {!allergenImage ? (
-                <label className="border-2 border-dashed border-slate-800 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-amber-500/50 hover:bg-slate-900/50 transition-all">
-                  <Upload className="w-10 h-10 text-amber-400 mb-3 animate-bounce" />
-                  <p className="text-sm font-bold text-white">Scatta o carica la foto della legenda allergeni</p>
-                  <p className="text-xs text-slate-400 mt-1">Compatibile con fotocamera e galleria</p>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleAllergenImageUpload}
-                    className="hidden"
-                  />
-                </label>
-              ) : allergenScanLoading ? (
-                <div className="space-y-4 text-center">
-                  <img
-                    src={allergenImage}
-                    alt="Allergeni preview"
-                    className="w-full h-48 object-cover rounded-xl border border-slate-800"
-                  />
-                  <div className="flex flex-col items-center justify-center py-4 space-y-2">
-                    <Loader2 className="w-6 h-6 animate-spin text-amber-400" />
-                    <p className="text-xs font-bold text-amber-400">
-                      Estrazione allergeni in corso tramite IA...
-                    </p>
-                  </div>
-                </div>
-              ) : allergenScanReview ? (
-                <>
-                  <p className="text-xs text-slate-400 shrink-0">
-                    {allergenScanReview.length === 0
-                      ? "L'IA non ha letto nessun allergene dalla foto. Puoi chiudere e riprovare, oppure aggiungerli manualmente qui sopra."
-                      : "Correggi eventuali errori di lettura, deseleziona ciò che non vuoi importare, poi conferma."}
-                  </p>
-                  <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-                    {allergenScanReview.map((row) => (
-                      <div
-                        key={row.tempId}
-                        className={`rounded-xl border p-2.5 flex items-center gap-1.5 transition-all ${
-                          row.include ? "border-amber-500/30 bg-slate-900/60" : "border-slate-800 bg-slate-900/20 opacity-50"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={row.include}
-                          onChange={(e) => updateAllergenReviewRow(row.tempId, { include: e.target.checked })}
-                          className="h-4 w-4 accent-amber-500 shrink-0"
-                        />
-                        <input
-                          value={row.code}
-                          onChange={(e) => updateAllergenReviewRow(row.tempId, { code: e.target.value })}
-                          placeholder="N°"
-                          className="w-12 rounded-lg bg-slate-950 border border-slate-800 px-2 py-1.5 text-[11px] font-mono text-white text-center focus:outline-none focus:border-amber-500"
-                        />
-                        <input
-                          value={row.name}
-                          onChange={(e) => updateAllergenReviewRow(row.tempId, { name: e.target.value })}
-                          placeholder="Nome allergene"
-                          className="flex-1 min-w-0 rounded-lg bg-slate-950 border border-slate-800 px-2 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-amber-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeAllergenReviewRow(row.tempId)}
-                          className="text-slate-500 hover:text-rose-400 shrink-0"
-                          title="Rimuovi riga"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-2 pt-2 border-t border-slate-800 shrink-0">
-                    <button
-                      type="button"
-                      onClick={cancelAllergenScan}
-                      className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white text-xs font-bold transition-colors"
-                    >
-                      Annulla
-                    </button>
-                    <button
-                      type="button"
-                      onClick={confirmAllergenScan}
-                      disabled={allergenScanReview.filter((r) => r.include).length === 0}
-                      className="flex-1 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-30 disabled:cursor-not-allowed py-2.5 text-xs font-black text-slate-950 uppercase tracking-wide transition-all flex items-center justify-center gap-2"
-                    >
-                      <Save className="w-4 h-4" />
-                      Aggiungi {allergenScanReview.filter((r) => r.include).length} allergen{allergenScanReview.filter((r) => r.include).length === 1 ? "e" : "i"}
-                    </button>
-                  </div>
-                </>
-              ) : null}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

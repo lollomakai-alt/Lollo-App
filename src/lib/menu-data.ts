@@ -41,6 +41,9 @@ export interface MenuDish {
   categoryRules?: Record<string, CategoryRule>;
   /** Portata di appartenenza per la sequenza di uscita in cucina (es. Antipasti, Primi...). */
   course?: string;
+  /** Categoria del piatto rilevata dallo scanner (es. "Pizze", "Sushi", "Panini"): usata per
+   * dividere le table card nell'Order Menu. Modificabile a mano in qualsiasi momento. */
+  category?: string;
   /** Prodotto ad alta rotazione: appare nella fascia Quick Items durante la presa comanda. */
   isQuickItem?: boolean;
 }

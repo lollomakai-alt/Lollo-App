@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 import { Calendar, Users, Clock, Plus, X, Trash2, Phone } from "lucide-react";
 import type { Reservation, CustomerSuggestion } from "@/lib/reservations-api";
 import { searchCustomerHistory } from "@/lib/reservations-api";
@@ -28,10 +28,6 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
   const [covers, setCovers] = useState(2);
   const [notes, setNotes] = useState("");
   const [suggestions, setSuggestions] = useState<CustomerSuggestion[]>([]);
-
-  // Swipe laterale per rivelare "Elimina": un solo tavolo aperto alla volta.
-  const [swipedId, setSwipedId] = useState<string | null>(null);
-  const dragRef = useRef<{ id: string; startX: number } | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,21 +61,6 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
     setClientName(s.name);
     setPhone(s.phone);
     setSuggestions([]);
-  };
-
-  const handlePointerDown = (id: string, e: React.PointerEvent) => {
-    dragRef.current = { id, startX: e.clientX };
-  };
-
-  const handlePointerMove = (id: string, e: React.PointerEvent) => {
-    if (!dragRef.current || dragRef.current.id !== id) return;
-    const dx = e.clientX - dragRef.current.startX;
-    if (dx < -40) setSwipedId(id); // swipe verso sinistra: rivela il pulsante Elimina
-    if (dx > 20) setSwipedId((prev) => (prev === id ? null : prev)); // swipe verso destra: richiude
-  };
-
-  const handlePointerUp = () => {
-    dragRef.current = null;
   };
 
   const sortedReservations = [...reservations].sort((a, b) => a.time.localeCompare(b.time));
@@ -116,35 +97,30 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
         ) : (
           sortedReservations.map((res) => {
             const isSelected = selectedReservationId === res.id;
-            const isSwiped = swipedId === res.id;
             return (
-              <div key={res.id} className="relative overflow-hidden rounded-2xl">
-                {/* Pulsante Elimina rivelato dallo swipe */}
+              <div
+                key={res.id}
+                onClick={() => onSelectReservation(res)}
+                className={`group relative flex flex-col p-3.5 rounded-2xl border cursor-pointer transition-colors ${
+                  isSelected
+                    ? "bg-cyan-500/25 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)]"
+                    : "bg-cyan-950/20 hover:bg-cyan-950/30 border-cyan-500/30 hover:border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
+                }`}
+              >
                 <button
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     if (window.confirm(`Eliminare la prenotazione di ${res.clientName}? Nome e telefono restano salvati nello storico clienti.`)) {
                       onDeleteReservation(res.id);
                     }
-                    setSwipedId(null);
                   }}
-                  className="absolute inset-y-0 right-0 flex w-16 items-center justify-center bg-rose-500 text-white"
+                  className="absolute right-2 top-2 rounded-lg p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                  title="Elimina prenotazione"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
 
-                <div
-                  onClick={() => (isSwiped ? setSwipedId(null) : onSelectReservation(res))}
-                  onPointerDown={(e) => handlePointerDown(res.id, e)}
-                  onPointerMove={(e) => handlePointerMove(res.id, e)}
-                  onPointerUp={handlePointerUp}
-                  style={{ transform: isSwiped ? "translateX(-64px)" : "translateX(0)" }}
-                  className={`group relative flex flex-col p-3.5 rounded-2xl border transition-transform duration-200 cursor-pointer touch-pan-y ${
-                    isSelected
-                      ? "bg-cyan-500/25 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)]"
-                      : "bg-cyan-950/20 hover:bg-cyan-950/30 border-cyan-500/30 hover:border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
-                  }`}
-                >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 pr-7">
                   <span className="text-xs font-black text-cyan-200 truncate">
                     {res.clientName}
                   </span>
@@ -169,7 +145,6 @@ export const ReservationsSidebar: React.FC<ReservationsSidebarProps> = ({
                   }`}>
                     {res.tableId ? `Tavolo ${res.tableId}` : "Da assegnare"}
                   </span>
-                </div>
                 </div>
               </div>
             );

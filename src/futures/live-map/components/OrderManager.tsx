@@ -4,14 +4,16 @@ import {
   fetchMenuDishesFromSupabase, 
   sendOrderToSupabase, 
   closeTicketInSupabase,
+  closePartialTicket,
   updateTableStatusInSupabase,
   printStornoToSupabase,
+  fetchTopSellingDishNames,
 } from "@/lib/supabase-service";
-import { fetchOrderItemsForTable, markOrderItemsServed, reassignOrderItemsTable, reduceOrderItemQuantity, summarizeTableCourses, type OrderItemRow } from "@/lib/order-items-api";
+import { fetchOrderItemsForTable, reassignOrderItemsTable, reduceOrderItemQuantity, summarizeTableCourses, type OrderItemRow } from "@/lib/order-items-api";
 import { fetchAlertThreshold, DEFAULT_ALERT_THRESHOLD_MINUTES } from "@/lib/alert-settings-api";
 import { MenuDish, CATEGORY_SUGGESTIONS, DEFAULT_CATEGORY_RULE, DEFAULT_COURSES } from "@/lib/menu-data";
 import { fetchCourses } from "@/lib/courses-api";
-import { Search, Plus, Minus, Send, FileText, CreditCard, Utensils, Layers, Zap, Check, CheckCircle2, Clock, Users, ArrowRightLeft } from "lucide-react";
+import { Search, Plus, Minus, Send, FileText, CreditCard, Utensils, Layers, Zap, Check, CheckCircle2, Clock, Users, ArrowRightLeft, Banknote } from "lucide-react";
 
 interface ReservationInfo {
   clientName?: string;
@@ -79,6 +81,10 @@ export function OrderManager({
   const [menuDishes, setMenuDishes] = useState<MenuDish[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [quickFilter, setQuickFilter] = useState<string>("all");
+  const [topDishNames, setTopDishNames] = useState<string[]>([]);
+  useEffect(() => {
+    fetchTopSellingDishNames().then(setTopDishNames);
+  }, []);
   // Su telefono le due colonne (menu / conto) non stanno affiancate: si passa da un tab all'altro.
   // Da tablet in su (lg) restano sempre entrambe visibili come prima.
   const [mobileTab, setMobileTab] = useState<"menu" | "cart">("menu");
@@ -178,11 +184,9 @@ export function OrderManager({
     t.label.toLowerCase().includes(moveSearch.toLowerCase()),
   );
 
-  // Stato Portate: righe già inviate in cucina per questo tavolo, con check ordinato/servito.
-  // Solo il cameriere spunta qui, nel momento in cui porta fisicamente il piatto al tavolo.
+  // Stato portate: letto in sola lettura per colorare l'header e mostrare il tempo di attesa.
+  // La spunta "servito" non si fa più da qui: la gestione dello stato piatti è esclusiva dell'App Cameriere.
   const [courseItems, setCourseItems] = useState<OrderItemRow[]>([]);
-  const [selectedServed, setSelectedServed] = useState<string[]>([]);
-  const [markingServed, setMarkingServed] = useState(false);
 
   const loadCourseItems = React.useCallback(async () => {
     const rows = await fetchOrderItemsForTable(tableId);
@@ -204,11 +208,8 @@ export function OrderManager({
     };
   }, [tableId, loadCourseItems]);
 
-  const pendingCourseItems = courseItems.filter((i) => i.status === "ordinato");
-  const servedCourseItems = courseItems.filter((i) => i.status === "servito");
-
   // Stato sintetico del tavolo (in preparazione / in attesa) + tempo trascorso, calcolato in tempo
-  // reale dai check "servito": colora l'header del gestionale come il corso d'opera in cucina/sala.
+  // reale dai check "servito" fatti dall'App Cameriere: colora l'header del gestionale come il corso d'opera in cucina/sala.
   const [alertThresholdMinutes, setAlertThresholdMinutes] = useState<number>(DEFAULT_ALERT_THRESHOLD_MINUTES);
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const wasAlertingRef = useRef(false);
@@ -308,27 +309,6 @@ export function OrderManager({
         badgeBorder: "border-cyan-500/40",
         badgeBg: "bg-cyan-500/10",
       };
-
-  const toggleSelectedServed = (id: string) => {
-    setSelectedServed((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  };
-
-  const handleMarkServed = async (ids: string[]) => {
-    if (ids.length === 0 || markingServed) return;
-    setMarkingServed(true);
-    try {
-      const success = await markOrderItemsServed(ids);
-      if (success) {
-        setSelectedServed([]);
-        await loadCourseItems();
-        onFlash(`✅ ${ids.length === 1 ? "Piatto segnato come servito" : `${ids.length} piatti segnati come serviti`}`);
-      } else {
-        onFlash("⚠️ Errore nell'aggiornamento dei piatti serviti");
-      }
-    } finally {
-      setMarkingServed(false);
-    }
-  };
 
   const [showReservationPopup, setShowReservationPopup] = useState<boolean>(!!reservation);
 
@@ -646,11 +626,26 @@ export function OrderManager({
     }
   };
 
-  const handleCloseBill = async () => {
+  // Modale "Paga": scelto il metodo, si procede alla chiusura totale o solo degli articoli selezionati
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentContext, setPaymentContext] = useState<"full" | "partial" | null>(null);
+
+  // Divisione Piatti/Conto: selezione di alcuni articoli da pagare subito, il resto resta aperto sul tavolo
+  const [splitMode, setSplitMode] = useState(false);
+  const [selectedForSplit, setSelectedForSplit] = useState<string[]>([]);
+
+  const toggleSplitSelection = (id: string) => {
+    setSelectedForSplit((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const splitSelectedItems = orderItems.filter((i) => selectedForSplit.includes(i.id));
+  const splitSelectedTotal = splitSelectedItems.reduce((sum, i) => sum + i.price * i.qty, 0);
+
+  const handleCloseBill = async (paymentMethod: string) => {
     if (isSending) return; // richiesta già in corso: ignora la pressione ripetuta
     setIsSending(true);
     try {
-      const success = await closeTicketInSupabase({ tableId, tableLabel, items: orderItems, total, covers });
+      const success = await closeTicketInSupabase({ tableId, tableLabel, items: orderItems, total, covers, paymentMethod });
       if (success) {
         try {
           window.localStorage.removeItem(draftKey(tableId));
@@ -668,14 +663,50 @@ export function OrderManager({
     }
   };
 
-  // Categorie dinamiche derivate dalle descrizioni brevi (stesso criterio della pagina Menu)
+  /** Paga solo gli articoli selezionati con "Dividi conto": il tavolo resta aperto con il resto dell'ordine. */
+  const handlePartialPayment = async (paymentMethod: string) => {
+    if (isSending || splitSelectedItems.length === 0) return;
+    setIsSending(true);
+    try {
+      const success = await closePartialTicket({
+        tableId,
+        tableLabel,
+        items: splitSelectedItems,
+        total: splitSelectedTotal,
+        covers,
+        paymentMethod,
+      });
+      if (success) {
+        const paidIds = new Set(selectedForSplit);
+        setOrderItems((prev) => prev.filter((i) => !paidIds.has(i.id)));
+        setSentSnapshot((prev) => {
+          const next = { ...prev };
+          paidIds.forEach((id) => delete next[id]);
+          return next;
+        });
+        onFlash(`💳 € ${splitSelectedTotal.toFixed(2)} pagati e archiviati, il resto del conto resta aperto`);
+        setSplitMode(false);
+        setSelectedForSplit([]);
+      } else {
+        onFlash("⚠️ Errore durante il pagamento parziale");
+      }
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const confirmPayment = (method: string) => {
+    setShowPaymentModal(false);
+    if (paymentContext === "full") handleCloseBill(method);
+    else if (paymentContext === "partial") handlePartialPayment(method);
+    setPaymentContext(null);
+  };
+
+  // Categorie reali (rilevate dallo scanner o modificate a mano nel form piatto), non più dedotte dalla descrizione
   const categoryChips = useMemo(() => {
     const cats = new Set<string>();
     menuDishes.forEach((d) => {
-      if (d.description && d.description.trim() !== "") {
-        const desc = d.description.trim();
-        if (desc.length < 20 && !desc.includes(",")) cats.add(desc);
-      }
+      if (d.category && d.category.trim() !== "") cats.add(d.category.trim());
     });
     return Array.from(cats);
   }, [menuDishes]);
@@ -687,10 +718,10 @@ export function OrderManager({
     if (!matchesSearch) return false;
 
     if (quickFilter === "all") return true;
-    if (quickFilter === "pref") return !!dish.isQuickItem;
+    if (quickFilter === "top") return topDishNames.includes(dish.name);
     if (quickFilter === "bar") return (dish.destination || "Cucina") === "Bar";
     if (quickFilter === "cucina") return (dish.destination || "Cucina") === "Cucina";
-    return (dish.description || "").trim().toLowerCase() === quickFilter.toLowerCase();
+    return (dish.category || "").trim().toLowerCase() === quickFilter.toLowerCase();
   });
 
   return (
@@ -893,7 +924,7 @@ export function OrderManager({
               <div className="mb-3 -mx-1 flex gap-1.5 overflow-x-auto pb-1 px-1">
                 {[
                   { key: "all", label: "Tutti" },
-                  { key: "pref", label: "⭐ Preferiti" },
+                  ...(topDishNames.length > 0 ? [{ key: "top", label: "🔥 Top Vendite" }] : []),
                   { key: "cucina", label: "🍳 Solo Cucina" },
                   { key: "bar", label: "🍹 Solo Bar" },
                   ...categoryChips.map((c) => ({ key: c, label: c })),
@@ -1005,6 +1036,62 @@ export function OrderManager({
                   <div className="flex h-full items-center justify-center text-slate-500 text-xs italic">
                     Nessun piatto trovato.
                   </div>
+                ) : quickFilter === "all" ? (
+                  (() => {
+                    // Raggruppa per categoria (rilevata dallo scanner o assegnata a mano), con "Altro" in fondo per chi non ne ha una
+                    const groups = new Map<string, typeof filteredDishes>();
+                    filteredDishes.forEach((dish) => {
+                      const key = dish.category?.trim() || "Altro";
+                      if (!groups.has(key)) groups.set(key, []);
+                      groups.get(key)!.push(dish);
+                    });
+                    const orderedKeys = [...groups.keys()].sort((a, b) =>
+                      a === "Altro" ? 1 : b === "Altro" ? -1 : a.localeCompare(b),
+                    );
+                    return (
+                      <div className="space-y-5">
+                        {orderedKeys.map((cat) => (
+                          <div key={cat}>
+                            <h3 className="mb-2 text-[11px] font-black uppercase tracking-wider text-cyan-400/90 flex items-center gap-1.5">
+                              <Layers className="w-3 h-3" />
+                              {cat}
+                            </h3>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3">
+                              {groups.get(cat)!.map((dish) => (
+                                <button
+                                  key={dish.id}
+                                  onClick={() => handleAddDish(dish)}
+                                  className={`group flex flex-col justify-between rounded-2xl border p-3.5 text-left transition-all cursor-pointer ${
+                                    dish.isComposable
+                                      ? "border-fuchsia-500/40 bg-fuchsia-950/10 hover:border-fuchsia-400 hover:bg-fuchsia-950/20 hover:shadow-[0_0_20px_rgba(217,70,239,0.2)]"
+                                      : "border-cyan-500/25 bg-slate-900/40 hover:border-cyan-400 hover:bg-cyan-950/30 hover:shadow-[0_0_20px_rgba(6,182,212,0.2)]"
+                                  }`}
+                                >
+                                  <div>
+                                    <h4 className="font-bold text-slate-100 text-xs group-hover:text-cyan-300 transition-colors flex items-center gap-1.5">
+                                      {dish.name}
+                                      {dish.isComposable && (
+                                        <span className="rounded-md bg-fuchsia-500/20 border border-fuchsia-500/40 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-fuchsia-300 flex items-center gap-0.5">
+                                          <Layers className="w-2.5 h-2.5" /> Componi
+                                        </span>
+                                      )}
+                                    </h4>
+                                    <p className="text-[10px] text-slate-400 line-clamp-2 mt-1">{dish.description}</p>
+                                  </div>
+                                  <div className="mt-3 flex items-center justify-between">
+                                    <span className="font-extrabold text-cyan-400 text-xs">€ {Number(dish.price).toFixed(2)}</span>
+                                    <span className="rounded-lg bg-cyan-500/10 px-2 py-0.5 text-[9px] text-cyan-300 border border-cyan-500/20 font-mono">
+                                      {dish.destination || "Cucina"}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3">
                     {filteredDishes.map((dish) => (
@@ -1084,88 +1171,44 @@ export function OrderManager({
                 </div>
               </div>
 
-              {courseItems.length > 0 && (
-                <div className="mb-3 rounded-2xl border border-orange-500/30 bg-orange-950/10 p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-orange-300">
-                      <Clock className="w-3.5 h-3.5" />
-                      Stato Portate
-                    </div>
-                    <span className="text-[10px] font-mono text-slate-400">
-                      {servedCourseItems.length}/{courseItems.length} servite
-                    </span>
-                  </div>
-
-                  {pendingCourseItems.length === 0 ? (
-                    <p className="text-[11px] text-emerald-400 italic">
-                      Tutte le portate inviate finora sono state servite.
-                    </p>
-                  ) : (
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                      {pendingCourseItems.map((row) => (
-                        <label
-                          key={row.id}
-                          className="flex items-center gap-2 rounded-xl border border-orange-500/20 bg-slate-900/60 px-2.5 py-2 text-[11px] cursor-pointer hover:border-orange-400/50"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedServed.includes(row.id)}
-                            onChange={() => toggleSelectedServed(row.id)}
-                            className="h-4 w-4 rounded border-orange-500/40 accent-orange-500"
-                          />
-                          <span className="flex-1 truncate text-slate-200 font-semibold">
-                            {row.qty}× {row.name}
-                          </span>
-                          {row.course && (
-                            <span className="text-[9px] font-mono text-orange-300/80 uppercase">{row.course}</span>
-                          )}
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              handleMarkServed([row.id]);
-                            }}
-                            disabled={markingServed}
-                            className="shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[9px] font-bold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40 cursor-pointer"
-                          >
-                            Servito
-                          </button>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-
-                  {selectedServed.length > 0 && (
-                    <button
-                      onClick={() => handleMarkServed(selectedServed)}
-                      disabled={markingServed}
-                      className="w-full rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 py-2 text-[11px] font-black text-slate-950 uppercase tracking-wide transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Segna serviti ({selectedServed.length})
-                    </button>
-                  )}
-                </div>
-              )}
-
               <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                 {orderItems.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-center text-slate-500 text-xs italic px-6">
                     Nessun articolo aggiunto. Seleziona i piatti dalla griglia a sinistra.
                   </div>
                 ) : (
-                  orderItems.map((item) => (
+                  orderItems.map((item) => {
+                    const isSelectedForSplit = selectedForSplit.includes(item.id);
+                    return (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between rounded-xl border border-cyan-500/20 bg-slate-900/50 p-3"
+                      onClick={() => splitMode && toggleSplitSelection(item.id)}
+                      className={`flex items-center justify-between rounded-xl border p-3 transition-all ${
+                        splitMode ? "cursor-pointer" : ""
+                      } ${
+                        isSelectedForSplit
+                          ? "border-fuchsia-400 bg-fuchsia-500/15 shadow-[0_0_12px_rgba(217,70,239,0.25)]"
+                          : "border-cyan-500/30 bg-slate-900/70"
+                      }`}
                     >
+                      {splitMode && (
+                        <input
+                          type="checkbox"
+                          checked={isSelectedForSplit}
+                          onChange={() => toggleSplitSelection(item.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 mr-2.5 shrink-0 accent-fuchsia-500"
+                        />
+                      )}
                       <div className="flex-1 pr-2 min-w-0">
-                        <h4 className="font-bold text-slate-200 text-xs truncate">{item.name}</h4>
+                        <h4 className="font-bold text-slate-100 text-sm truncate">{item.name}</h4>
                         <div className="flex items-center gap-1.5 mt-1">
-                          <p className="text-[11px] font-mono text-cyan-400 font-bold">€ {(item.price * item.qty).toFixed(2)}</p>
+                          <p className="text-xs font-mono text-cyan-300 font-bold">€ {(item.price * item.qty).toFixed(2)}</p>
                           {/* Portata riga: un tap apre il picker nativo, un secondo tap la assegna */}
                           <select
                             value={item.course || ""}
                             onChange={(e) => handleUpdateCourse(item.id, e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
                             className={`rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide focus:outline-none ${
                               item.course
                                 ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
@@ -1181,23 +1224,26 @@ export function OrderManager({
                           </select>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => handleUpdateQty(item.id, -1)}
-                          className="h-7 w-7 rounded-lg border border-cyan-500/30 bg-slate-950 text-cyan-400 font-bold hover:bg-cyan-500/20 flex items-center justify-center cursor-pointer"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                        <span className="font-mono font-bold text-slate-100 text-xs w-4 text-center">{item.qty}</span>
-                        <button
-                          onClick={() => handleUpdateQty(item.id, 1)}
-                          className="h-7 w-7 rounded-lg border border-cyan-500/30 bg-slate-950 text-cyan-400 font-bold hover:bg-cyan-500/20 flex items-center justify-center cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
+                      {!splitMode && (
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleUpdateQty(item.id, -1)}
+                            className="h-8 w-8 rounded-lg border border-cyan-500/30 bg-slate-950 text-cyan-400 font-bold hover:bg-cyan-500/20 flex items-center justify-center cursor-pointer"
+                          >
+                            <Minus className="w-3.5 h-3.5" />
+                          </button>
+                          <span className="font-mono font-black text-slate-100 text-sm w-5 text-center">{item.qty}</span>
+                          <button
+                            onClick={() => handleUpdateQty(item.id, 1)}
+                            className="h-8 w-8 rounded-lg border border-cyan-500/30 bg-slate-950 text-cyan-400 font-bold hover:bg-cyan-500/20 flex items-center justify-center cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -1256,6 +1302,25 @@ export function OrderManager({
                   <span className="font-mono text-base font-black text-cyan-300">€ {total.toFixed(2)}</span>
                 </div>
 
+                {splitMode && (
+                  <div className="rounded-xl border border-fuchsia-500/40 bg-fuchsia-950/20 px-3 py-2 flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-fuchsia-300">
+                      {selectedForSplit.length === 0
+                        ? "Seleziona sopra gli articoli da pagare ora"
+                        : `${selectedForSplit.length} selezionati -- € ${splitSelectedTotal.toFixed(2)}`}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSplitMode(false);
+                        setSelectedForSplit([]);
+                      }}
+                      className="text-fuchsia-300/70 hover:text-white text-xs font-bold"
+                    >
+                      Annulla
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => handleSendOrder("COMANDA")}
@@ -1274,14 +1339,48 @@ export function OrderManager({
                     <span>Preconto</span>
                   </button>
                   <button
-                    onClick={handleCloseBill}
+                    onClick={() => {
+                      setSplitMode((v) => !v);
+                      setSelectedForSplit([]);
+                    }}
                     disabled={isSending}
-                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 py-2.5 px-2 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/30 transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    className={`flex flex-col items-center justify-center gap-1 rounded-xl border py-2.5 px-2 text-[11px] font-bold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                      splitMode
+                        ? "border-fuchsia-400 bg-fuchsia-500/25 text-fuchsia-200"
+                        : "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/20"
+                    }`}
                   >
-                    <CreditCard className="w-3.5 h-3.5" />
-                    <span>Chiudi & Paga</span>
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Dividi conto</span>
                   </button>
                 </div>
+
+                {splitMode ? (
+                  <button
+                    onClick={() => {
+                      if (selectedForSplit.length === 0) return;
+                      setPaymentContext("partial");
+                      setShowPaymentModal(true);
+                    }}
+                    disabled={isSending || selectedForSplit.length === 0}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 disabled:cursor-not-allowed py-3 text-sm font-black text-slate-950 uppercase tracking-wide transition-all cursor-pointer shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+                  >
+                    <CreditCard className="w-4 h-4" />
+                    Paga selezionati {selectedForSplit.length > 0 && `(€ ${splitSelectedTotal.toFixed(2)})`}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setPaymentContext("full");
+                      setShowPaymentModal(true);
+                    }}
+                    disabled={isSending}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed py-3 text-sm font-black text-slate-950 uppercase tracking-wide transition-all cursor-pointer shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+                  >
+                    <CreditCard className="w-4 h-4" />
+                    Paga (€ {total.toFixed(2)})
+                  </button>
+                )}
               </div>
 
             </div>
@@ -1383,6 +1482,44 @@ export function OrderManager({
                 Aggiungi al conto
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showPaymentModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
+          <div className="w-full max-w-sm rounded-3xl border border-emerald-500/40 bg-slate-950 p-6 shadow-[0_0_50px_rgba(16,185,129,0.3)] text-slate-100">
+            <h3 className="text-sm font-black uppercase tracking-wider text-emerald-400 mb-1">Come paga il cliente?</h3>
+            <p className="text-xs text-slate-400 mb-5">
+              {paymentContext === "partial"
+                ? `Importo selezionato: € ${splitSelectedTotal.toFixed(2)}`
+                : `Totale da incassare: € ${total.toFixed(2)}`}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => confirmPayment("contanti")}
+                className="flex flex-col items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 py-5 text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer"
+              >
+                <Banknote className="w-7 h-7" />
+                <span className="text-xs font-black uppercase tracking-wide">Contanti</span>
+              </button>
+              <button
+                onClick={() => confirmPayment("bancomat")}
+                className="flex flex-col items-center gap-2 rounded-2xl border border-cyan-500/40 bg-cyan-500/10 py-5 text-cyan-300 hover:bg-cyan-500/20 transition-all cursor-pointer"
+              >
+                <CreditCard className="w-7 h-7" />
+                <span className="text-xs font-black uppercase tracking-wide">Bancomat</span>
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                setShowPaymentModal(false);
+                setPaymentContext(null);
+              }}
+              className="w-full mt-4 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white py-2.5 text-xs font-bold transition-colors"
+            >
+              Annulla
+            </button>
           </div>
         </div>
       )}

@@ -1,13 +1,11 @@
 import {
   scanMenuWithAI,
   scanIngredientsWithAI,
-  scanAllergensWithAI,
   type ScannedDish,
   type ScannedIngredient,
-  type ScannedAllergen,
 } from "@/lib/menu-scan.functions";
 
-export type { ScannedDish, ScannedIngredient, ScannedAllergen };
+export type { ScannedDish, ScannedIngredient };
 
 function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }> {
   return new Promise((resolve, reject) => {
@@ -22,7 +20,7 @@ function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }>
   });
 }
 
-/** Scatta/carica una foto del menu ed estrae i piatti tramite IA (chiave API lato server). */
+/** Scatta/carica una foto del menu ed estrae i piatti (con categoria) tramite IA (chiave API lato server). */
 export async function scanMenuImage(file: File): Promise<ScannedDish[]> {
   const { base64, mimeType } = await fileToBase64(file);
   return await scanMenuWithAI({ data: { imageBase64: base64, mimeType } });
@@ -32,10 +30,4 @@ export async function scanMenuImage(file: File): Promise<ScannedDish[]> {
 export async function scanIngredientsImage(file: File): Promise<ScannedIngredient[]> {
   const { base64, mimeType } = await fileToBase64(file);
   return await scanIngredientsWithAI({ data: { imageBase64: base64, mimeType } });
-}
-
-/** Scatta/carica una foto dell'elenco allergeni ed estrae nome/codice tramite IA. */
-export async function scanAllergensImage(file: File): Promise<ScannedAllergen[]> {
-  const { base64, mimeType } = await fileToBase64(file);
-  return await scanAllergensWithAI({ data: { imageBase64: base64, mimeType } });
 }
