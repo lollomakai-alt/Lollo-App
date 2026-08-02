@@ -216,9 +216,10 @@ function MenuManagementPage() {
       setIngredientScanReview(
         scanned.map((item, index) => ({ ...item, tempId: `scan-ing-${Date.now()}-${index}`, include: true })),
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error("Errore durante la scansione ingredienti:", error);
-      alert("Impossibile leggere gli ingredienti dalla foto. Riprova o correggi manualmente qui sotto.");
+      const detail = error?.message ? `\n\nDettaglio: ${error.message}` : "";
+      alert(`Impossibile leggere gli ingredienti dalla foto. Riprova o correggi manualmente qui sotto.${detail}`);
       setIngredientScanReview([]);
     } finally {
       setIngredientScanLoading(false);
@@ -277,9 +278,10 @@ function MenuManagementPage() {
       setScanReview(
         scannedItems.map((item, index) => ({ ...item, tempId: `scan-dish-${Date.now()}-${index}`, include: true })),
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error("Errore durante la scansione IA:", error);
-      alert("Impossibile leggere i piatti dalla foto. Riprova o correggi manualmente qui sotto.");
+      const detail = error?.message ? `\n\nDettaglio: ${error.message}` : "";
+      alert(`Impossibile leggere i piatti dalla foto. Riprova o correggi manualmente qui sotto.${detail}`);
       setScanReview([]);
     } finally {
       setLoading(false);
